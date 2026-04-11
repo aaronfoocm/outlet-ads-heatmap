@@ -63,7 +63,8 @@ export default function HeatmapPage() {
   const [period, setPeriod] = useState<Period>('Week');
   const [compareMode, setCompareMode] = useState<CompareMode>('self');
   const [adsType, setAdsType] = useState<'netSales' | 'orderQty'>('netSales');
-  const [groupedMode, setGroupedMode] = useState(false);
+  // 'per' = each entity individually, 'all' = single combined row, 'group' = by category/channel
+  const [groupBy, setGroupBy] = useState<'per' | 'all' | 'group'>('per');
   const [selectedEntities, setSelectedEntities] = useState<string[]>([]);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
@@ -179,8 +180,47 @@ export default function HeatmapPage() {
     return { adsMap: ads, cellMap: pcells, colAdsMap: colAds, gridDates: gridDs, overallAds: oaN > 0 ? oaSum / oaN : 0, athSelfMap: athSelf, sumMap: sum };
   }, [allRows, startDate, endDate, period, selectedEntities, selectedCategories, selectedChannels, adsType]);
 
+  // ── Grouped data (Per Category / Per Channel) ──────────────────
+  // Aggregates entity data by group dimension (category for outlets, channel for SKUs)
+  const { groupAdsMap, groupCellMap, groupSumMap } = useMemo(() => {
+    const gTotals = new Map<string, { total: number; count: number }>();
+    const gCells = new Map<string, Map<string, { sum: number; count: number }>>();
+    const gAllRows = allRows.filter(r => {
+      if (r.entityName || r.entityCode) return true;
+      return false;
+    });
+    for (const r of gAllRows) {
+      const d = toSortable(r.date);
+      if (d < startDate || d > endDate) continue;
+      if (selectedEntities.length > 0 && !(selectedEntities.includes(r.entityName) || selectedEntities.includes(r.entityCode))) continue;
+      if (selectedCategories.length > 0 && !selectedCategories.includes(r.category)) continue;
+      if (selectedChannels.length > 0 && !selectedChannels.includes(r.mainChannel)) continue;
+      const grpDim = view === 'sku' ? 'mainChannel' : 'category';
+      const grp = grpDim === 'mainChannel' ? r.mainChannel : r.category;
+      if (!grp) continue;
+      const pKey = getPeriodRange(d, period);
+      const val = adsType === 'orderQty' ? r.orderQty : r.netSales;
+      const acc = gTotals.get(grp) ?? { total: 0, count: 0 };
+      gTotals.set(grp, { total: acc.total + val, count: acc.count + 1 });
+      if (!gCells.has(grp)) gCells.set(grp, new Map());
+      const prev = gCells.get(grp)!.get(pKey) ?? { sum: 0, count: 0 };
+      gCells.get(grp)!.set(pKey, { sum: prev.sum + val, count: prev.count + 1 });
+    }
+    const gAds = new Map<string, number>();
+    for (const [g, v] of gTotals) gAds.set(g, v.count > 0 ? v.total / v.count : 0);
+    const gSum = new Map<string, number>();
+    for (const [g, v] of gTotals) gSum.set(g, v.total);
+    return { groupAdsMap: gAds, groupCellMap: gCells, groupSumMap: gSum };
+  }, [allRows, startDate, endDate, period, selectedEntities, selectedCategories, selectedChannels, adsType]);
+
   // Use entityName as the unique row identifier — groups same product across sizes/variants
   const allEntityNames = useMemo(() => [...new Set(allRows.map(r => r.entityName || r.entityCode))].sort(), [allRows]);
+  // 'group' mode groups by category (outlets) or channel (SKUs)
+  const groupDimension = view === 'sku' ? 'mainChannel' : 'category';
+  const allGroups = useMemo(() => {
+    if (view === 'sku') return [...new Set(allRows.map(r => r.mainChannel).filter(Boolean))].sort();
+    return [...new Set(allRows.map(r => r.category).filter(Boolean))].sort();
+  }, [allRows, view]);
 
   const outletsInScope = (selectedCategories.length > 0 || selectedChannels.length > 0)
     ? [...new Set(allRows.filter(r =>
@@ -188,9 +228,15 @@ export default function HeatmapPage() {
         (selectedChannels.length === 0 || selectedChannels.includes(r.mainChannel))
       ).map(r => r.entityName || r.entityCode))]
     : allEntityNames;
-  const sortedEntities = groupedMode
-    ? (['__GROUPED__'] as string[])
-    : outletsInScope.filter((code: string) => cellMap.has(code)).sort((a: string, b: string) => (sumMap.get(b) ?? 0) - (sumMap.get(a) ?? 0));
+
+  // Build sortedEntities based on groupBy mode
+  const sortedEntities = (() => {
+    if (groupBy === 'all') return ['__ALL__'] as string[];
+    if (groupBy === 'group') {
+      return allGroups.filter(g => groupSumMap.has(g)).sort((a, b) => (groupSumMap.get(b) ?? 0) - (groupSumMap.get(a) ?? 0));
+    }
+    return outletsInScope.filter((code: string) => cellMap.has(code)).sort((a: string, b: string) => (sumMap.get(b) ?? 0) - (sumMap.get(a) ?? 0));
+  })();
 
   // ── Conditional returns AFTER all hooks ────────────────────────
   if (isLoading) {
@@ -211,14 +257,14 @@ export default function HeatmapPage() {
           <div>
             <div style={{ fontSize: 18, fontWeight: 700, color: DEEP_GRN }}>Koppiku Heatmap</div>
             <div style={{ fontSize: 11, color: SOFT_GRN, marginTop: 2 }}>
-              {view === 'outlet' ? 'Outlet' : 'SKU'} · {groupedMode ? 'All combined' : `${sortedEntities.length} ${entityLabel.toLowerCase()}${sortedEntities.length !== 1 ? 's' : ''}`} · {gridDates.length} {period.toLowerCase()}{gridDates.length !== 1 ? 's' : ''}
+              {view === 'outlet' ? 'Outlet' : 'SKU'} · {groupBy === 'per' ? `${sortedEntities.length} ${entityLabel.toLowerCase()}${sortedEntities.length !== 1 ? 's' : ''}` : groupBy === 'all' ? 'All combined' : `${sortedEntities.length} ${view === 'sku' ? 'channels' : 'categories'}`} · {gridDates.length} {period.toLowerCase()}{gridDates.length !== 1 ? 's' : ''}
             </div>
           </div>
 
           {/* Tab switcher */}
           <div style={{ display: 'flex', gap: 0, marginLeft: 'auto', border: `1.5px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden' }}>
             {(['outlet', 'sku'] as EntityType[]).map(v => (
-              <button key={v} onClick={() => { setView(v); setSelectedEntities([]); setSelectedCategories([]); setSelectedChannels([]); setHovered(null); setGroupedMode(false); }}
+              <button key={v} onClick={() => { setView(v); setSelectedEntities([]); setSelectedCategories([]); setSelectedChannels([]); setHovered(null); setGroupBy('per'); setCompareMode('self'); }}
                 style={{ fontSize: 11, padding: '5px 14px', cursor: 'pointer', backgroundColor: view === v ? DEEP_GRN : WHITE, color: view === v ? WHITE : DEEP_GRN, border: 'none', fontWeight: view === v ? 600 : 400, outline: 'none' }}>
                 {v === 'outlet' ? 'Outlet' : 'SKU'}
               </button>
@@ -227,13 +273,17 @@ export default function HeatmapPage() {
 
           {/* Individual / Grouped toggle */}
           <div style={{ display: 'flex', gap: 0, border: `1.5px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden' }}>
-            <button onClick={() => { setGroupedMode(false); setHovered(null); }}
-              style={{ fontSize: 11, padding: '5px 14px', cursor: 'pointer', backgroundColor: !groupedMode ? DEEP_GRN : WHITE, color: !groupedMode ? WHITE : DEEP_GRN, border: 'none', fontWeight: !groupedMode ? 600 : 400, outline: 'none' }}>
+            <button onClick={() => { setGroupBy('per'); setCompareMode('self'); setHovered(null); }}
+              style={{ fontSize: 11, padding: '5px 14px', cursor: 'pointer', backgroundColor: groupBy === 'per' ? DEEP_GRN : WHITE, color: groupBy === 'per' ? WHITE : DEEP_GRN, border: 'none', fontWeight: groupBy === 'per' ? 600 : 400, outline: 'none' }}>
               Per {entityLabel}
             </button>
-            <button onClick={() => { setGroupedMode(true); setHovered(null); }}
-              style={{ fontSize: 11, padding: '5px 14px', cursor: 'pointer', backgroundColor: groupedMode ? DEEP_GRN : WHITE, color: groupedMode ? WHITE : DEEP_GRN, border: 'none', fontWeight: groupedMode ? 600 : 400, outline: 'none' }}>
+            <button onClick={() => { setGroupBy('all'); setCompareMode('col'); setHovered(null); }}
+              style={{ fontSize: 11, padding: '5px 14px', cursor: 'pointer', backgroundColor: groupBy === 'all' ? DEEP_GRN : WHITE, color: groupBy === 'all' ? WHITE : DEEP_GRN, border: 'none', fontWeight: groupBy === 'all' ? 600 : 400, outline: 'none' }}>
               All {entityLabel}s
+            </button>
+            <button onClick={() => { setGroupBy('group'); setCompareMode('col'); setHovered(null); }}
+              style={{ fontSize: 11, padding: '5px 14px', cursor: 'pointer', backgroundColor: groupBy === 'group' ? DEEP_GRN : WHITE, color: groupBy === 'group' ? WHITE : DEEP_GRN, border: 'none', fontWeight: groupBy === 'group' ? 600 : 400, outline: 'none' }}>
+              Per {view === 'sku' ? 'Channel' : 'Category'}
             </button>
           </div>
         </div>
@@ -414,8 +464,11 @@ export default function HeatmapPage() {
             </thead>
             <tbody>
               {sortedEntities.map((code: string) => {
-                const isGrouped = code === '__GROUPED__';
-                const groupedPeriodMap = isGrouped
+                const isAll = code === '__ALL__';
+                const isGroupRow = groupBy === 'group';
+
+                // Compute combined row data for 'all' mode
+                const allPeriodMap = isAll
                   ? (() => {
                       const m = new Map<string, { sum: number; count: number }>();
                       for (const [, pm] of cellMap) {
@@ -427,15 +480,20 @@ export default function HeatmapPage() {
                       return m;
                     })()
                   : new Map<string, { sum: number; count: number }>();
-                const overallGroupedADS = isGrouped
+                const allADS = isAll
                   ? (() => { let s = 0, n = 0; for (const [, v] of sumMap) { s += v; } for (const [, pm] of cellMap) { for (const [, c] of pm) { n += c.count; } } return n > 0 ? s / n : 0; })()
                   : 0;
-                const ads = isGrouped ? overallGroupedADS : (adsMap.get(code) ?? 0);
-                const dateMap = isGrouped ? groupedPeriodMap : (cellMap.get(code) ?? new Map());
-                const rowLabel = isGrouped ? `All ${entityLabel}s` : (disp(entityNames[code] ?? code, view === 'outlet'));
+
+                // Use grouped data or individual data
+                const ads = isAll ? allADS : isGroupRow ? (groupAdsMap.get(code) ?? 0) : (adsMap.get(code) ?? 0);
+                const dateMap = isAll ? allPeriodMap : isGroupRow ? (groupCellMap.get(code) ?? new Map()) : (cellMap.get(code) ?? new Map());
+
+                const rowLabel = isAll ? `All ${entityLabel}s` : isGroupRow ? code : disp(entityNames[code] ?? code, view === 'outlet');
+                const rowKey = isAll ? '__ALL__' : isGroupRow ? code : code;
+
                 return (
-                  <tr key={code}>
-                    <td style={{ position: 'sticky', left: 0, zIndex: 5, backgroundColor: WHITE, padding: '5px 10px', fontSize: 11, fontWeight: isGrouped ? 600 : 500, color: DEEP_GRN, borderRight: `2px solid ${BORDER}`, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{disp(rowLabel, view === 'outlet')}</td>
+                  <tr key={rowKey}>
+                    <td style={{ position: 'sticky', left: 0, zIndex: 5, backgroundColor: WHITE, padding: '5px 10px', fontSize: 11, fontWeight: isAll ? 600 : 500, color: DEEP_GRN, borderRight: `2px solid ${BORDER}`, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{rowLabel}</td>
                     <td style={{ padding: '5px 10px', textAlign: 'right', fontSize: 11, borderRight: `1px solid ${BORDER}`, color: DEEP_GRN, fontWeight: 600 }}>{fmtK(ads)}</td>
                     {gridDates.map(d => {
                       const cell = dateMap.get(d) ?? null;
@@ -450,7 +508,7 @@ export default function HeatmapPage() {
                         <td key={d}
                           onMouseEnter={e => {
                             if (periodAds !== null) {
-                              setHovered({ entity: code, entityName: rowLabel, category: '', periodKey: d, periodAds, colAdsValue: colAds, colAds, selfAds: selfAdsVal, athSelf: athSelfMap.get(code) ?? 0, colDev: colAds > 0 ? (periodAds - colAds) / colAds : 0, selfDev: selfAdsVal > 0 ? (periodAds - selfAdsVal) / selfAdsVal : 0, x: (e as unknown as MouseEvent).clientX, y: (e as unknown as MouseEvent).clientY });
+                              setHovered({ entity: rowKey, entityName: rowLabel, category: isGroupRow ? code : (allRows.find(r => (r.entityName || r.entityCode) === code)?.category ?? ''), periodKey: d, periodAds, colAdsValue: colAds, colAds, selfAds: selfAdsVal, athSelf: 0, colDev: colAds > 0 ? (periodAds - colAds) / colAds : 0, selfDev: selfAdsVal > 0 ? (periodAds - selfAdsVal) / selfAdsVal : 0, x: (e as unknown as MouseEvent).clientX, y: (e as unknown as MouseEvent).clientY });
                             }
                           }}
                           onMouseLeave={() => setHovered(null)}

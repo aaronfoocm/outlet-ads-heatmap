@@ -2,18 +2,20 @@
 
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import useSWR from 'swr';
+import { Period, CompareMode, EntityType } from '../lib/heatmap-types';
+import { parseSalesCSV, toSortable, dateAddDays, getPeriodRange, fmtPeriodHeader, fmtPeriodSub, toDate } from '../lib/heatmap-utils';
 
 // ── Brand palette ───────────────────────────────────────────────
 const CREAM    = '#FCF1E4';
 const SOFT_GRN = '#A3B78A';
 const DEEP_GRN = '#486A34';
 const BORDER   = '#E5E0D8';
-
-// Strip leading "Koppiku " prefix for cleaner display names
-const disp = (s: string) => s.replace(/^Koppiku\s+/, '');
 const WHITE    = '#FFFFFF';
 
-// ── Brighter heatmap palette ──────────────────────────────────────
+// Strip leading "Koppiku " prefix — only for Outlet view
+const disp = (s: string, isOutlet = false) => isOutlet ? s.replace(/^Koppiku\s+/, '') : s;
+
+// ── Color palette ────────────────────────────────────────────────
 // Positive: bright green (t=0) → dark forest green (t=1)
 const G1 = { r:  0, g: 230, b:  0 };
 const G2 = { r:  0, g: 190, b: 20 };
@@ -37,211 +39,69 @@ function brightCellFg(dev: number) {
   return Math.abs(dev) > 0.25 ? WHITE : DEEP_GRN;
 }
 
-const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-
-// ── Date helpers ─────────────────────────────────────────────────
-function toSortable(d: string) {
-  if (!d) return d;
-  const p = d.trim().split('-');
-  if (p.length !== 3) return d;
-  const first = parseInt(p[0]);
-  if (first >= 1 && first <= 31) {
-    // DD-MM-YYYY → YYYY-MM-DD
-    return `${p[2].padStart(4,'0')}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`;
+// ── Number formatters ────────────────────────────────────────────
+function fmtK(n: number, isCount = false) {
+  if (isCount) {
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+    return n.toFixed(0);
   }
-  return d;
-}
-
-function toDate(str: string) {
-  if (!str || str.trim() === '') return null;
-  const p = str.trim().split('-');
-  if (p.length !== 3) return null;
-  let y: number, m: number, d: number;
-  const first = parseInt(p[0]);
-  if (first >= 1 && first <= 31) {
-    y = parseInt(p[2]); m = parseInt(p[1]); d = first;
-  } else {
-    y = parseInt(p[0]); m = parseInt(p[1]); d = parseInt(p[2]);
-  }
-  if (isNaN(y) || isNaN(m) || isNaN(d)) return null;
-  const date = new Date(y, m - 1, d);
-  if (isNaN(date.getTime())) return null;
-  return date;
-}
-
-function dateAddDays(dateStr: string, days: number) {
-  const d = toDate(dateStr);
-  if (!d) return '';
-  d.setDate(d.getDate() + days);
-  const y = d.getFullYear();
-  const m = d.getMonth() + 1;
-  const day = d.getDate();
-  if (y < 1000 || y > 3000) return '';
-  return `${y}-${String(m).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
-}
-
-function fmtShort(d: string) {
-  const p = d.split('-');
-  return `${parseInt(p[2])} ${MONTHS[parseInt(p[1]) - 1]}`;
-}
-
-function fmtFullDate(d: string) {
-  const p = d.split('-');
-  return `${parseInt(p[2])} ${MONTHS[parseInt(p[1]) - 1]} ${p[0]}`;
-}
-
-function fmtK(n: number) {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-  if (n < 0) return '–';
-  return n.toFixed(0);
+  if (n >= 100) return n.toFixed(0);
+  return n.toFixed(1);
 }
 
-type Period = 'Day' | 'Week' | 'Month' | 'Quarter';
-
-function getPeriodRange(d: string, period: Period) {
-  const pd = toDate(d);
-  if (!pd) return d;
-  const y = pd.getFullYear();
-  const m = pd.getMonth() + 1;
-  const dom = pd.getDate();
-  if (period === 'Day') return d;
-  if (period === 'Week') {
-    const dow = pd.getDay();
-    const diffToMon = dow === 0 ? -6 : 1 - dow;
-    const mon = new Date(pd);
-    mon.setDate(dom + diffToMon);
-    return `${mon.getFullYear()}-${String(mon.getMonth()+1).padStart(2,'0')}-${String(mon.getDate()).padStart(2,'0')}`;
-  }
-  if (period === 'Month') return `${y}-${String(m).padStart(2,'0')}-01`;
-  const qm = Math.ceil(m / 3) * 3 - 2;
-  return `${y}-${String(qm).padStart(2,'0')}-01`;
-}
-
-function fmtPeriodHeader(d: string, period: Period) {
-  const pd = toDate(d);
-  if (!pd) return d;
-  const y = pd.getFullYear();
-  const m = pd.getMonth() + 1;
-  if (period === 'Day') return `${MONTHS[m-1]} ${pd.getDate()}`;
-  if (period === 'Week') return `${MONTHS[m-1]} ${pd.getDate()}`;
-  if (period === 'Month') return `${MONTHS[m-1]} ${y}`;
-  const q = Math.ceil(m / 3);
-  return `Q${q} ${y}`;
-}
-
-function fmtPeriodSub(d: string, period: Period) {
-  if (period === 'Day') return null;
-  if (period === 'Week') return 'week';
-  return null;
-}
-
-// ── Fetcher ─────────────────────────────────────────────────────
-let _cache: { hash: string; data: { allRows: {date:string;locCode:string;netSales:number;locName:string;category:string}[]; locCodes: string[]; locNames: Record<string,string>; categories: string[]; minDate: string; maxDate: string } } | null = null;
-
-// Simple CSV parser — handles quoted fields with embedded commas
-function parseCSVLine(line: string): string[] {
-  const result: string[] = [];
-  let inQuotes = false;
-  let field = '';
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (inQuotes && line[i+1] === '"') { field += '"'; i++; }
-      else inQuotes = !inQuotes;
-    } else if (ch === ',' && !inQuotes) {
-      result.push(field.trim());
-      field = '';
-    } else {
-      field += ch;
-    }
-  }
-  result.push(field.trim());
-  return result;
-}
-
-async function fetchAndCache(url: string) {
+// ── Fetcher ────────────────────────────────────────────────────
+async function fetchCSV(url: string) {
   const r = await fetch(url, { cache: 'no-store' });
   if (!r.ok) throw new Error('CSV fetch failed');
-  const text = await r.text();
-  const hash = text.slice(0, 200);
-  if (_cache && _cache.hash === hash) return _cache.data;
-  const lines = text.trim().split('\n');
-  const rows: {date:string;locCode:string;netSales:number;locName:string;category:string}[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const c = parseCSVLine(lines[i]);
-    if (c.length < 3) continue;
-    if (!c[0] || !c[1] || !c[2]) continue;
-    if (c[0] === 'Date') continue;
-    const ns = parseFloat(c[2]);
-    if (isNaN(ns)) continue;
-    rows.push({ date: c[0], locCode: c[1], netSales: ns, locName: c[3] ?? '', category: c[4] ?? '' });
-  }
-  const locs = [...new Set(rows.map(r => r.locCode))].sort();
-  const ds = [...new Set(rows.map(r => toSortable(r.date)))].sort();
-    const locNameMap: Record<string,string> = {};
-  for (const r of rows) { locNameMap[r.locCode] = r.locName; }
-  const categories = [...new Set(rows.map(r => r.category))].sort();
-  const data = { allRows: rows, locCodes: locs, locNames: locNameMap, categories, minDate: ds[0] ?? '', maxDate: ds[ds.length-1] ?? '' };
-  _cache = { hash, data };
-  return data;
+  return r.text();
 }
 
-// ── Types ───────────────────────────────────────────────────────
-interface HoverInfo {
-  loc: string;
-  locName: string;
-  category: string;
-  periodKey: string;
-  periodAds: number | null;
-  colAdsValue: number;
-  colAds: number;
-  selfAds: number;
-  athSelf: number;
-  colDev: number;
-  selfDev: number;
-  x: number;
-  y: number;
-}
-
-// ── Main component ──────────────────────────────────────────────
+// ── Main component ────────────────────────────────────────────────
 export default function HeatmapPage() {
-  const { data: parsed, isLoading, error } = useSWR(
-    '/data/outlet_daily_sales.csv?v=4',
-    fetchAndCache,
-    { refreshInterval: 30000, revalidateOnFocus: true, revalidateOnMount: true }
-  );
-
-  // ── ALL hooks declared BEFORE any conditional return ───────────
-  const { allRows, locCodes, locNames, categories, minDate, maxDate } = parsed ?? { allRows: [], locCodes: [], locNames: {}, categories: [], minDate: '', maxDate: '' };
-  const [selectedLocs, setSelectedLocs] = useState<string[]>([]);
-  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate]     = useState('');
+  const [view, setView] = useState<EntityType>('outlet');
   const [period, setPeriod] = useState<Period>('Week');
-  const [compareMode, setCompareMode] = useState<'col' | 'self'>('self');
+  const [compareMode, setCompareMode] = useState<CompareMode>('self');
+  const [adsType, setAdsType] = useState<'netSales' | 'orderQty'>('netSales');
+  const [groupedMode, setGroupedMode] = useState(false);
+  const [selectedEntities, setSelectedEntities] = useState<string[]>([]);
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [hovered, setHovered] = useState<HoverInfo | null>(null);
+  const [catDropdownOpen, setCatDropdownOpen] = useState(false);
+  const [channelDropdownOpen, setChannelDropdownOpen] = useState(false);
+  const catDropdownRef = useRef<HTMLDivElement>(null);
+  const channelDropdownRef = useRef<HTMLDivElement>(null);
+  const [hovered, setHovered] = useState<{entity:string;entityName:string;category:string;periodKey:string;periodAds:number|null;colAdsValue:number;colAds:number;selfAds:number;athSelf:number;colDev:number;selfDev:number;x:number;y:number}|null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Set default date range once data loads
+  const csvUrl = view === 'outlet' ? '/data/outlet_daily_sales.csv?v=6' : '/data/sku_daily_sales.csv?v=1';
+  const { data: rawCsv, isLoading } = useSWR(csvUrl, fetchCSV, { refreshInterval: 86400000, revalidateOnFocus: true, revalidateOnMount: true });
+
+  const { allRows, entityCodes, entityNames, categories, channels, minDate, maxDate } = useMemo(() => {
+    if (!rawCsv) return { allRows: [], entityCodes: [], entityNames: {}, categories: [], channels: [], minDate: '', maxDate: '' };
+    return parseSalesCSV(rawCsv);
+  }, [rawCsv]);
+
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate]     = useState('');
+
   useEffect(() => {
     if (!minDate) return;
     setStartDate(dateAddDays(maxDate, -89));
     setEndDate(maxDate);
   }, [minDate, maxDate]);
 
-  // Close dropdown on outside click
   useEffect(() => {
     function handleClick(e: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setDropdownOpen(false);
-      }
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) setDropdownOpen(false);
+      if (catDropdownRef.current && !catDropdownRef.current.contains(e.target as Node)) setCatDropdownOpen(false);
+      if (channelDropdownRef.current && !channelDropdownRef.current.contains(e.target as Node)) setChannelDropdownOpen(false);
     }
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
-  // Dismiss tooltip on scroll
   useEffect(() => {
     function handleScroll() { setHovered(null); }
     window.addEventListener('scroll', handleScroll, true);
@@ -249,47 +109,54 @@ export default function HeatmapPage() {
   }, []);
 
   // ── Derived data ──────────────────────────────────────────────
-  const toggleLoc = useCallback((loc: string) => {
-    setSelectedLocs(prev => prev.includes(loc) ? prev.filter(l => l !== loc) : [...prev, loc]);
+  const toggleEntity = useCallback((code: string) => {
+    setSelectedEntities(prev => prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]);
   }, []);
 
-  const toggleAll = useCallback(() => {
-    setSelectedLocs(prev => prev.length >= locCodes.length ? [] : [...locCodes]);
-  }, [locCodes]);
+  const toggleAllEntities = useCallback(() => {
+    setSelectedEntities(prev => prev.length >= entityCodes.length ? [] : [...entityCodes]);
+  }, [entityCodes]);
+
+  const metricVal = (r: typeof allRows[0]) => adsType === 'orderQty' ? r.orderQty : r.netSales;
 
   const { adsMap, cellMap, colAdsMap, gridDates, overallAds, athSelfMap, sumMap } = useMemo(() => {
-    const totals = new Map<string,{total:number;count:number}>();
-    const pcells = new Map<string,Map<string,{sum:number;count:number}>>();
-for (const r of allRows) {
+    const totals = new Map<string, { total: number; count: number }>();
+    const pcells = new Map<string, Map<string, { sum: number; count: number }>>();
+    for (const r of allRows) {
       const d = toSortable(r.date);
       if (d < startDate || d > endDate) continue;
-      if (selectedLocs.length > 0 && !selectedLocs.includes(r.locCode)) continue;
+      if (selectedEntities.length > 0 && !selectedEntities.includes(r.entityCode)) continue;
       if (selectedCategories.length > 0 && !selectedCategories.includes(r.category)) continue;
+      if (selectedChannels.length > 0 && !selectedChannels.includes(r.mainChannel)) continue;
       const pKey = getPeriodRange(d, period);
-      const acc = totals.get(r.locCode) ?? {total:0,count:0};
-      totals.set(r.locCode, {total: acc.total + r.netSales, count: acc.count + 1});
-      if (!pcells.has(r.locCode)) pcells.set(r.locCode, new Map());
-      const prev = pcells.get(r.locCode)!.get(pKey) ?? {sum:0,count:0};
-      pcells.get(r.locCode)!.set(pKey, {sum: prev.sum + r.netSales, count: prev.count + 1});
+      const val = metricVal(r);
+      // Key by entityName so same product across sizes/variants groups together
+      const rowKey = r.entityName || r.entityCode;
+      const acc = totals.get(rowKey) ?? { total: 0, count: 0 };
+      totals.set(rowKey, { total: acc.total + val, count: acc.count + 1 });
+      if (!pcells.has(rowKey)) pcells.set(rowKey, new Map());
+      const prev = pcells.get(rowKey)!.get(pKey) ?? { sum: 0, count: 0 };
+      pcells.get(rowKey)!.set(pKey, { sum: prev.sum + val, count: prev.count + 1 });
     }
 
-    const ads = new Map<string,number>();
-    for (const [loc, v] of totals) ads.set(loc, v.count > 0 ? v.total / v.count : 0);
+    const ads = new Map<string, number>();
+    for (const [code, v] of totals) ads.set(code, v.count > 0 ? v.total / v.count : 0);
+    // Ensure all entityNames are in the name map
+    for (const r of allRows) { if (!entityNames[r.entityName]) entityNames[r.entityName] = r.entityName; }
 
-    const colAds = new Map<string,number>();
+    const colAds = new Map<string, number>();
     const periods = [...new Set([...pcells.values()].flatMap(m => [...m.keys()]))].sort();
     for (const p of periods) {
       let sum = 0, n = 0;
-      for (const [loc, pm] of pcells) {
+      for (const [, pm] of pcells) {
         const cell = pm.get(p);
         if (!cell || cell.count === 0) continue;
-        sum += cell.sum / cell.count; // ADS for this outlet in this period
+        sum += cell.sum / cell.count;
         n++;
       }
       colAds.set(p, n > 0 ? sum / n : 0);
     }
 
-    // Only show period keys that actually have data (no empty gaps)
     const gridDs = startDate && endDate
       ? [...new Set([...pcells.values()].flatMap(m => [...m.keys()]))].sort()
       : [];
@@ -297,118 +164,119 @@ for (const r of allRows) {
     let oaSum = 0, oaN = 0;
     for (const [, v] of totals) { oaSum += v.total; oaN += v.count; }
 
-    const athSelf = new Map<string,number>();
-    for (const [loc, pm] of pcells) {
+    const athSelf = new Map<string, number>();
+    for (const [code, pm] of pcells) {
       let best = 0;
       for (const [, cell] of pm) {
         if (cell.count > 0) best = Math.max(best, cell.sum / cell.count);
       }
-      athSelf.set(loc, best);
+      athSelf.set(code, best);
     }
 
-    const sum = new Map<string,number>();
-    for (const [loc, v] of totals) sum.set(loc, v.total);
+    const sum = new Map<string, number>();
+    for (const [code, v] of totals) sum.set(code, v.total);
 
     return { adsMap: ads, cellMap: pcells, colAdsMap: colAds, gridDates: gridDs, overallAds: oaN > 0 ? oaSum / oaN : 0, athSelfMap: athSelf, sumMap: sum };
-  }, [allRows, startDate, endDate, period, selectedLocs, selectedCategories]);
+  }, [allRows, startDate, endDate, period, selectedEntities, selectedCategories, selectedChannels, adsType]);
 
-  const selfMaxAbsDevMap = useMemo(() => {
-    const m = new Map<string,number>();
-    for (const [loc, dateMap] of cellMap) {
-      let locMax = 0;
-      for (const [, cell] of dateMap) {
-        if (cell.count === 0) continue;
-        locMax = Math.max(locMax, cell.sum / cell.count);
-      }
-      m.set(loc, locMax || 1);
-    }
-    return m;
-  }, [cellMap]);
+  // Use entityName as the unique row identifier — groups same product across sizes/variants
+  const allEntityNames = useMemo(() => [...new Set(allRows.map(r => r.entityName || r.entityCode))].sort(), [allRows]);
 
-  const maxAbsDev = useMemo(() => {
-    if (compareMode === 'self') return 1;
-    let m = 0;
-    for (const [, periodMap] of cellMap) {
-      for (const [p, cell] of periodMap) {
-        if (cell.count === 0) continue;
-        const periodAds = cell.sum / cell.count;
-        const colA = colAdsMap.get(p) ?? 0;
-        if (colA <= 0) continue;
-        m = Math.max(m, Math.abs((periodAds - colA) / colA));
-      }
-    }
-    return m || 1;
-  }, [cellMap, colAdsMap, compareMode]);
+  const outletsInScope = (selectedCategories.length > 0 || selectedChannels.length > 0)
+    ? [...new Set(allRows.filter(r =>
+        (selectedCategories.length === 0 || selectedCategories.includes(r.category)) &&
+        (selectedChannels.length === 0 || selectedChannels.includes(r.mainChannel))
+      ).map(r => r.entityName || r.entityCode))]
+    : allEntityNames;
+  const sortedEntities = groupedMode
+    ? (['__GROUPED__'] as string[])
+    : outletsInScope.filter((code: string) => cellMap.has(code)).sort((a: string, b: string) => (sumMap.get(b) ?? 0) - (sumMap.get(a) ?? 0));
 
   // ── Conditional returns AFTER all hooks ────────────────────────
   if (isLoading) {
     return (
-      <div style={{backgroundColor: CREAM, minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center'}}>
-        <p style={{color: DEEP_GRN, fontSize: 14}}>Loading data…</p>
-      </div>
-    );
-  }
-  if (error) {
-    return (
-      <div style={{backgroundColor: CREAM, minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 8}}>
-        <p style={{color: '#C0392B', fontSize: 14}}>Failed to load data</p>
-        <p style={{color: '#AAA', fontSize: 12}}>{String(error)}</p>
+      <div style={{ backgroundColor: CREAM, minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <p style={{ color: DEEP_GRN, fontSize: 14 }}>Loading data…</p>
       </div>
     );
   }
 
-  const outletsInScope = selectedCategories.length > 0
-    ? [...new Set(allRows.filter(r => selectedCategories.includes(r.category)).map(r => r.locCode))]
-    : locCodes;
-  const sortedLocs = outletsInScope.filter(loc => cellMap.has(loc)).sort((a, b) => (sumMap.get(b) ?? 0) - (sumMap.get(a) ?? 0));
+  const entityLabel = view === 'outlet' ? 'Outlet' : 'SKU';
 
-  // ── Render ────────────────────────────────────────────────────
   return (
-    <div style={{backgroundColor: CREAM, minHeight: '100vh', fontFamily: 'system-ui, sans-serif', color: DEEP_GRN}}>
-      <div style={{position: 'sticky', top: 0, zIndex: 20, backgroundColor: WHITE, backdropFilter: 'blur(4px)', padding: '14px 16px', borderBottom: `2px solid ${BORDER}`}}>
-        <div style={{fontSize: 18, fontWeight: 700, color: DEEP_GRN}}>Outlet ADS Heatmap</div>
-        <div style={{fontSize: 11, color: SOFT_GRN, marginTop: 2}}>
-          Green = above ADS · Blue = below ADS · {sortedLocs.length} outlets · {gridDates.length} {period.toLowerCase()}{gridDates.length !== 1 ? 's' : ''} · CSV auto-refreshes every 30s
-        </div>
-      </div>
+    <div style={{ backgroundColor: CREAM, minHeight: '100vh', fontFamily: 'system-ui, sans-serif' }}>
+      {/* ── Header ── */}
+      <div style={{ backgroundColor: WHITE, borderBottom: `2px solid ${BORDER}`, padding: '12px 20px', position: 'sticky', top: 0, zIndex: 50 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: DEEP_GRN }}>Koppiku Heatmap</div>
+            <div style={{ fontSize: 11, color: SOFT_GRN, marginTop: 2 }}>
+              {view === 'outlet' ? 'Outlet' : 'SKU'} · {groupedMode ? 'All combined' : `${sortedEntities.length} ${entityLabel.toLowerCase()}${sortedEntities.length !== 1 ? 's' : ''}`} · {gridDates.length} {period.toLowerCase()}{gridDates.length !== 1 ? 's' : ''}
+            </div>
+          </div>
 
-      <div style={{padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 14}}>
-        {/* Controls */}
-        <div style={{display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center'}}>
-          <div style={{display: 'flex', gap: 4}}>
-            {(['Day','Week','Month','Quarter'] as Period[]).map(p => {
-              const active = period === p;
-              return (
-                <button key={p} onClick={() => { setPeriod(p); setHovered(null); }}
-                  style={{fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', backgroundColor: active ? DEEP_GRN : WHITE, color: active ? WHITE : DEEP_GRN, border: `1.5px solid ${active ? DEEP_GRN : BORDER}`, fontWeight: active ? 600 : 400, transition: 'all 0.15s'}}>
-                  {p}
-                </button>
-              );
-            })}
+          {/* Tab switcher */}
+          <div style={{ display: 'flex', gap: 0, marginLeft: 'auto', border: `1.5px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden' }}>
+            {(['outlet', 'sku'] as EntityType[]).map(v => (
+              <button key={v} onClick={() => { setView(v); setSelectedEntities([]); setSelectedCategories([]); setSelectedChannels([]); setHovered(null); setGroupedMode(false); }}
+                style={{ fontSize: 11, padding: '5px 14px', cursor: 'pointer', backgroundColor: view === v ? DEEP_GRN : WHITE, color: view === v ? WHITE : DEEP_GRN, border: 'none', fontWeight: view === v ? 600 : 400, outline: 'none' }}>
+                {v === 'outlet' ? 'Outlet' : 'SKU'}
+              </button>
+            ))}
           </div>
-          <div style={{display: 'flex', gap: 8, alignItems: 'center'}}>
-            <label style={{fontSize: 11, color: SOFT_GRN}}>From</label>
-            <input type="date" value={startDate} onChange={e => { setStartDate(e.target.value); setHovered(null); }} style={{fontSize: 11, border: `1.5px solid ${BORDER}`, borderRadius: 6, padding: '4px 8px', color: DEEP_GRN}} />
-            <label style={{fontSize: 11, color: SOFT_GRN}}>To</label>
-            <input type="date" value={endDate} onChange={e => { setEndDate(e.target.value); setHovered(null); }} style={{fontSize: 11, border: `1.5px solid ${BORDER}`, borderRadius: 6, padding: '4px 8px', color: DEEP_GRN}} />
+
+          {/* Individual / Grouped toggle */}
+          <div style={{ display: 'flex', gap: 0, border: `1.5px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden' }}>
+            <button onClick={() => { setGroupedMode(false); setHovered(null); }}
+              style={{ fontSize: 11, padding: '5px 14px', cursor: 'pointer', backgroundColor: !groupedMode ? DEEP_GRN : WHITE, color: !groupedMode ? WHITE : DEEP_GRN, border: 'none', fontWeight: !groupedMode ? 600 : 400, outline: 'none' }}>
+              Per {entityLabel}
+            </button>
+            <button onClick={() => { setGroupedMode(true); setHovered(null); }}
+              style={{ fontSize: 11, padding: '5px 14px', cursor: 'pointer', backgroundColor: groupedMode ? DEEP_GRN : WHITE, color: groupedMode ? WHITE : DEEP_GRN, border: 'none', fontWeight: groupedMode ? 600 : 400, outline: 'none' }}>
+              All {entityLabel}s
+            </button>
           </div>
-          <div style={{position: 'relative'}} ref={dropdownRef}>
-            <button onClick={() => setDropdownOpen(o => !o)} style={{fontSize: 11, padding: '6px 12px', borderRadius: 6, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1.5px solid ${BORDER}`, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6}}>
-              {selectedLocs.length === 0 ? `All outlets (${locCodes.length})` : `${selectedLocs.length} outlets selected`}
-              <span style={{fontSize: 9, color: SOFT_GRN}}>▼</span>
+        </div>
+
+        {/* Controls row */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginTop: 10 }}>
+          {/* Period */}
+          {(['Day', 'Week', 'Month', 'Quarter'] as Period[]).map(p => (
+            <button key={p} onClick={() => { setPeriod(p); setHovered(null); }}
+              style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', backgroundColor: period === p ? DEEP_GRN : WHITE, color: period === p ? WHITE : DEEP_GRN, border: `1px solid ${period === p ? DEEP_GRN : BORDER}`, fontWeight: period === p ? 600 : 400 }}>
+              {p}
+            </button>
+          ))}
+
+          {/* Date range */}
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <label style={{ fontSize: 11, color: SOFT_GRN }}>From</label>
+            <input type="date" value={startDate} onChange={e => { setStartDate(e.target.value); setHovered(null); }}
+              style={{ fontSize: 11, border: `1.5px solid ${BORDER}`, borderRadius: 6, padding: '4px 8px', color: DEEP_GRN }} />
+            <label style={{ fontSize: 11, color: SOFT_GRN }}>To</label>
+            <input type="date" value={endDate} onChange={e => { setEndDate(e.target.value); setHovered(null); }}
+              style={{ fontSize: 11, border: `1.5px solid ${BORDER}`, borderRadius: 6, padding: '4px 8px', color: DEEP_GRN }} />
+          </div>
+
+          {/* Entity filter dropdown */}
+          <div style={{ position: 'relative' }} ref={dropdownRef}>
+            <button onClick={() => setDropdownOpen(o => !o)}
+              style={{ fontSize: 11, padding: '6px 12px', borderRadius: 6, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1.5px solid ${BORDER}`, display: 'flex', alignItems: 'center', gap: 6 }}>
+              {selectedEntities.length === 0 ? `All ${entityLabel.toLowerCase()}s (${allEntityNames.length})` : `${selectedEntities.length} selected`}
+              <span style={{ fontSize: 9, color: SOFT_GRN }}>▼</span>
             </button>
             {dropdownOpen && (
-              <div style={{position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 100, backgroundColor: WHITE, border: `1.5px solid ${BORDER}`, borderRadius: 8, padding: 8, minWidth: 220, boxShadow: '0 4px 12px rgba(0,0,0,0.12)', maxHeight: 280, overflowY: 'auto'}}>
-                <div style={{display: 'flex', gap: 8, marginBottom: 8, paddingBottom: 8, borderBottom: `1px solid ${BORDER}`}}>
-                  <button onClick={() => { setSelectedLocs([]); setHovered(null); }} style={{fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`}}>All</button>
-                  <button onClick={() => { setSelectedLocs([...locCodes]); setHovered(null); }} style={{fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`}}>None</button>
+              <div style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 100, backgroundColor: WHITE, border: `1.5px solid ${BORDER}`, borderRadius: 8, padding: 8, minWidth: 240, boxShadow: '0 4px 12px rgba(0,0,0,0.12)', maxHeight: 300, overflowY: 'auto' }}>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 8, paddingBottom: 8, borderBottom: `1px solid ${BORDER}` }}>
+                  <button onClick={() => { setSelectedEntities([]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}` }}>All</button>
+                  <button onClick={() => { setSelectedEntities([...allEntityNames]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}` }}>None</button>
                 </div>
-                {locCodes.map(loc => {
-                  const checked = selectedLocs.includes(loc);
+                {allEntityNames.map((name: string) => {
+                  const checked = selectedEntities.includes(name);
                   return (
-                    <label key={loc} style={{display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', cursor: 'pointer'}}>
-                      <input type="checkbox" checked={checked} onChange={() => { toggleLoc(loc); setHovered(null); }} style={{cursor: 'pointer'}} />
-                      <span style={{fontSize: 11, color: DEEP_GRN}}>{disp(locNames[loc] ?? loc)}</span>
+                    <label key={name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={checked} onChange={() => { toggleEntity(name); setHovered(null); }} style={{ cursor: 'pointer' }} />
+                      <span style={{ fontSize: 11, color: DEEP_GRN }}>{disp(name, view === 'outlet')}</span>
                     </label>
                   );
                 })}
@@ -416,123 +284,192 @@ for (const r of allRows) {
             )}
           </div>
 
-          {/* Category filter — shown inline beside outlet filter */}
-          <div style={{display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center'}}>
-            <span style={{fontSize: 10, color: SOFT_GRN, marginRight: 2}}>Cat:</span>
-            {categories.map(cat => {
-              const active = selectedCategories.includes(cat);
-              return (
-                <button key={cat} onClick={() => { setSelectedCategories(prev => active ? prev.filter(c => c !== cat) : [...prev, cat]); setHovered(null); }} style={{fontSize: 10, padding: '3px 8px', borderRadius: 12, cursor: 'pointer', backgroundColor: active ? DEEP_GRN : WHITE, color: active ? WHITE : DEEP_GRN, border: `1px solid ${active ? DEEP_GRN : BORDER}`}}>
-                  {cat}
-                </button>
-              );
-            })}
-            {selectedCategories.length > 0 && (
-              <button onClick={() => { setSelectedCategories([]); setHovered(null); }} style={{fontSize: 10, padding: '3px 8px', borderRadius: 12, cursor: 'pointer', backgroundColor: '#EEE', color: '#888', border: '1px solid #CCC'}}>
-                Clear
-              </button>
-            )}
-          </div>
-        
-          <div style={{display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', marginTop: 6}}>
-            <div style={{display: 'flex', gap: 4, alignItems: 'center'}}>
-              <span style={{fontSize: 10, color: SOFT_GRN, whiteSpace: 'nowrap'}}>Compare:</span>
-              <button onClick={() => { setCompareMode('col'); setHovered(null); }} style={{fontSize: 10, padding: '3px 8px', borderRadius: 6, cursor: 'pointer', backgroundColor: compareMode === 'col' ? DEEP_GRN : WHITE, color: compareMode === 'col' ? WHITE : DEEP_GRN, border: `1.5px solid ${compareMode === 'col' ? DEEP_GRN : BORDER}`, fontWeight: compareMode === 'col' ? 600 : 400}}>vs Column</button>
-              <button onClick={() => { setCompareMode('self'); setHovered(null); }} style={{fontSize: 10, padding: '3px 8px', borderRadius: 6, cursor: 'pointer', backgroundColor: compareMode === 'self' ? DEEP_GRN : WHITE, color: compareMode === 'self' ? WHITE : DEEP_GRN, border: `1.5px solid ${compareMode === 'self' ? DEEP_GRN : BORDER}`, fontWeight: compareMode === 'self' ? 600 : 400}}>vs Self</button>
-            </div>
-            <div style={{display: 'flex', alignItems: 'center', gap: 3, fontSize: 10, color: SOFT_GRN}}>
-              <span>Below {compareMode === 'col' ? 'Column ADS' : 'Own ADS'}</span>
-              {[0.2,0.4,0.6,0.8,1.0].map(t => <div key={t} style={{width: 20, height: 15, borderRadius: 3, backgroundColor: brightCellBg(-t, 1)}} />)}
-              <span style={{marginLeft: 4}}>Neutral</span>
-              <div style={{width: 20, height: 15, borderRadius: 3, backgroundColor: '#EDF3E8'}} />
-              <span style={{marginLeft: 4}}>Above {compareMode === 'col' ? 'Column ADS' : 'Own ADS'}</span>
-              {[0.2,0.4,0.6,0.8,1.0].map(t => <div key={t} style={{width: 20, height: 15, borderRadius: 3, backgroundColor: brightCellBg(t, 1)}} />)}
-            </div>
-          </div>
-        </div>
-
-        {/* Heatmap */}
-        {sortedLocs.length === 0 ? (
-          <div style={{textAlign: 'center', padding: 32, color: SOFT_GRN, fontSize: 13}}>No data for selected filters.</div>
-        ) : (
-          <div style={{overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 310px)'}}>
-            {hovered && (
-              <div style={{position: 'fixed', left: hovered.x + 14, top: hovered.y + 14, zIndex: 9999, backgroundColor: WHITE, border: `1.5px solid ${DEEP_GRN}`, borderRadius: 8, padding: '10px 14px', boxShadow: '0 6px 24px rgba(0,0,0,0.18)', minWidth: 210, pointerEvents: 'none'}}>
-                <div style={{fontSize: 12, fontWeight: 700, color: DEEP_GRN, marginBottom: 2}}>{hovered.locName}</div>
-                <div style={{fontSize: 10, color: SOFT_GRN, marginBottom: 8, lineHeight: 1.4}}>
-                  {hovered.category && <span style={{backgroundColor: '#EDF3E8', borderRadius: 4, padding: '1px 5px', marginRight: 6}}>{hovered.category}</span>}
-                  {fmtPeriodHeader(hovered.periodKey, period)}
-                  {fmtPeriodSub(hovered.periodKey, period) && <><br/><span style={{fontSize: 9}}>{fmtPeriodSub(hovered.periodKey, period)}</span></>}
+          {/* Category filter */}
+          <div style={{ position: 'relative' }} ref={catDropdownRef}>
+            <button onClick={() => setCatDropdownOpen(o => !o)}
+              style={{ fontSize: 11, padding: '6px 12px', borderRadius: 6, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1.5px solid ${BORDER}`, display: 'flex', alignItems: 'center', gap: 6 }}>
+              {selectedCategories.length === 0 ? `All Categories (${categories.length})` : `${selectedCategories.length} selected`}
+              <span style={{ fontSize: 9, color: SOFT_GRN }}>▼</span>
+            </button>
+            {catDropdownOpen && (
+              <div style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 100, backgroundColor: WHITE, border: `1.5px solid ${BORDER}`, borderRadius: 8, padding: 8, minWidth: 200, boxShadow: '0 4px 12px rgba(0,0,0,0.12)', maxHeight: 280, overflowY: 'auto' }}>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 8, paddingBottom: 8, borderBottom: `1px solid ${BORDER}` }}>
+                  <button onClick={() => { setSelectedCategories([]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}` }}>All</button>
+                  <button onClick={() => { setSelectedCategories([...categories]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}` }}>None</button>
                 </div>
-                <div style={{display: 'flex', flexDirection: 'column', gap: 5}}>
-                  <div style={{display: 'flex', justifyContent: 'space-between', gap: 20}}><span style={{color: '#888'}}>Period ADS</span><span style={{color: DEEP_GRN, fontWeight: 600}}>{hovered.periodAds !== null ? fmtK(hovered.periodAds) : '–'}</span></div>
-                  <div style={{display: 'flex', justifyContent: 'space-between', gap: 20}}><span style={{color: '#888'}}>Column ADS</span><span style={{color: DEEP_GRN, fontWeight: 600}}>{fmtK(hovered.colAds)}</span></div>
-                  <div style={{display: 'flex', justifyContent: 'space-between', gap: 20}}><span style={{color: '#888'}}>Own ADS</span><span style={{color: DEEP_GRN, fontWeight: 600}}>{fmtK(hovered.selfAds)}</span></div>
-                  <div style={{display: 'flex', justifyContent: 'space-between', gap: 20}}><span style={{color: '#888'}}>ATH (Self)</span><span style={{color: '#7B3F9E', fontWeight: 600}}>{fmtK(hovered.athSelf)}</span></div>
-                  <div style={{borderTop: `1px solid ${BORDER}`, paddingTop: 5, marginTop: 2, display: 'flex', flexDirection: 'column', gap: 4}}>
-                    <div style={{display: 'flex', justifyContent: 'space-between', gap: 20}}><span style={{color: '#888'}}>vs Column</span><span style={{color: hovered.colDev >= 0 ? '#2E7D32' : '#1565C0', fontWeight: 600}}>{hovered.periodAds !== null && hovered.colAdsValue > 0 ? `${((hovered.periodAds - hovered.colAdsValue) / hovered.colAdsValue * 100).toFixed(1)}%` : '–'}</span></div>
-                    <div style={{display: 'flex', justifyContent: 'space-between', gap: 20}}><span style={{color: '#888'}}>vs Self</span><span style={{color: hovered.selfDev >= 0 ? '#2E7D32' : '#1565C0', fontWeight: 600}}>{hovered.periodAds !== null && hovered.selfAds > 0 ? `${((hovered.periodAds - hovered.selfAds) / hovered.selfAds * 100).toFixed(1)}%` : '–'}</span></div>
-                  </div>
-                </div>
-              </div>
-            )}
-            <table style={{borderCollapse: 'collapse', minWidth: gridDates.length * 44 + 160}}>
-              <thead>
-                <tr>
-                  <th style={{position: 'sticky', left: 0, top: 0, zIndex: 30, backgroundColor: WHITE, padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: DEEP_GRN, borderRight: `2px solid ${BORDER}`, borderBottom: `2px solid ${BORDER}`}}>Outlet</th>
-                  <th style={{position: 'sticky', top: 0, zIndex: 29, backgroundColor: WHITE, padding: '8px 10px', textAlign: 'right', fontSize: 11, fontWeight: 600, color: DEEP_GRN, borderBottom: `2px solid ${BORDER}`, minWidth: 64, borderRight: `1px solid ${BORDER}`}}>ADS</th>
-                  {gridDates.map(d => {
-                    const sub = fmtPeriodSub(d, period);
-                    return (
-                      <th key={d} style={{padding: '5px 3px', textAlign: 'center', fontSize: 10, color: DEEP_GRN, borderBottom: `1px solid ${BORDER}`, minWidth: 44}}>
-                        <span style={{fontSize: 10, fontWeight: 500}}>{fmtPeriodHeader(d, period)}</span>
-                        {sub && <><br/><span style={{fontSize: 8, color: SOFT_GRN}}>{sub}</span></>}
-                      </th>
-                    );
-                  })}
-                </tr>
-              </thead>
-              <tbody>
-                {sortedLocs.map(loc => {
-                  const ads = adsMap.get(loc) ?? 0;
-                  const dateMap = cellMap.get(loc)!;
+                {categories.map((cat: string) => {
+                  const checked = selectedCategories.includes(cat);
                   return (
-                    <tr key={loc}>
-                      <td style={{position: 'sticky', left: 0, zIndex: 5, backgroundColor: WHITE, padding: '5px 10px', fontSize: 11, fontWeight: 500, color: DEEP_GRN, borderRight: `2px solid ${BORDER}`, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{disp(locNames[loc] ?? loc)}</td>
-                      <td style={{padding: '5px 10px', textAlign: 'right', fontSize: 11, borderRight: `1px solid ${BORDER}`, color: DEEP_GRN, fontWeight: 600}}>{fmtK(ads)}</td>
-                      {gridDates.map(d => {
-                        const cell = dateMap.get(d) ?? null;
-                        const periodAds = cell !== null ? cell.sum / cell.count : null;
-                        const colAds = compareMode === 'col' ? (colAdsMap.get(d) ?? 0) : ads;
-                        const dev = periodAds !== null && colAds > 0 ? (periodAds - colAds) / colAds : 0;
-                        const locMaxAbs = compareMode === 'self' ? 1 : maxAbsDev;
-                        const bg = brightCellBg(dev, locMaxAbs);
-                        const fg = brightCellFg(dev);
-                        const cellLabel = periodAds !== null ? (periodAds >= 1000 ? `${(periodAds/1000).toFixed(1)}k` : periodAds >= 100 ? periodAds.toFixed(0) : periodAds.toFixed(1)) : null;
-                        return (
-                          <td
-                            key={d}
-                            onMouseEnter={e => {
-                              if (periodAds !== null) {
-                                setHovered({loc, locName: locNames[loc] ?? loc, category: categories.find(cat => allRows.some(r => r.locCode === loc && r.category === cat)) ?? '', periodKey: d, periodAds, colAdsValue: colAds, colAds, selfAds: ads, athSelf: athSelfMap.get(loc) ?? 0, colDev: colAds > 0 ? (periodAds - colAds) / colAds : 0, selfDev: ads > 0 ? (periodAds - ads) / ads : 0, x: (e as unknown as MouseEvent).clientX, y: (e as unknown as MouseEvent).clientY});
-                              }
-                            }}
-                            onMouseLeave={() => setHovered(null)}
-                            style={{padding: '5px 2px', textAlign: 'center', fontSize: 10, fontWeight: 500, backgroundColor: bg, color: fg, borderRight: `1px solid ${BORDER}`, cursor: periodAds !== null ? 'pointer' : 'default', minWidth: 44}}
-                          >{cellLabel}</td>
-                        );
-                      })}
-                    </tr>
+                    <label key={cat} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={checked} onChange={() => { setSelectedCategories(prev => checked ? prev.filter(c => c !== cat) : [...prev, cat]); setHovered(null); }} style={{ cursor: 'pointer' }} />
+                      <span style={{ fontSize: 11, color: DEEP_GRN }}>{cat}</span>
+                    </label>
                   );
                 })}
-              </tbody>
-            </table>
+              </div>
+            )}
           </div>
-        )}
-        <div style={{fontSize: 10, textAlign: 'center', color: SOFT_GRN}}>
-          ADS = total NetSales &divide; days with transactions in selected range &nbsp;&middot;&nbsp;
-          CSV: <code style={{fontSize: 9, color: SOFT_GRN}}>outlet-ads-heatmap/data/outlet_daily_sales.csv</code>
+
+          {/* Channel filter — only shown for SKU view */}
+          {view === 'sku' && channels.length > 0 && (
+            <div style={{ position: 'relative' }} ref={channelDropdownRef}>
+              <button onClick={() => setChannelDropdownOpen(o => !o)}
+                style={{ fontSize: 11, padding: '6px 12px', borderRadius: 6, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1.5px solid ${BORDER}`, display: 'flex', alignItems: 'center', gap: 6 }}>
+                {selectedChannels.length === 0 ? `All Channels (${channels.length})` : `${selectedChannels.length} selected`}
+                <span style={{ fontSize: 9, color: SOFT_GRN }}>▼</span>
+              </button>
+              {channelDropdownOpen && (
+                <div style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 100, backgroundColor: WHITE, border: `1.5px solid ${BORDER}`, borderRadius: 8, padding: 8, minWidth: 200, boxShadow: '0 4px 12px rgba(0,0,0,0.12)', maxHeight: 280, overflowY: 'auto' }}>
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 8, paddingBottom: 8, borderBottom: `1px solid ${BORDER}` }}>
+                    <button onClick={() => { setSelectedChannels([]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}` }}>All</button>
+                    <button onClick={() => { setSelectedChannels([...channels]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}` }}>None</button>
+                  </div>
+                  {channels.map((ch: string) => {
+                    const checked = selectedChannels.includes(ch);
+                    return (
+                      <label key={ch} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={checked} onChange={() => { setSelectedChannels(prev => checked ? prev.filter(c => c !== ch) : [...prev, ch]); setHovered(null); }} style={{ cursor: 'pointer' }} />
+                        <span style={{ fontSize: 11, color: DEEP_GRN }}>{ch}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
+
+        {/* Compare + Legend */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', marginTop: 6 }}>
+          {/* Metric toggle — SKU only */}
+          {view === 'sku' && (
+            <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+              <span style={{ fontSize: 10, color: SOFT_GRN, whiteSpace: 'nowrap' }}>Metric:</span>
+              <div style={{ display: 'flex', gap: 0, border: `1px solid ${BORDER}`, borderRadius: 6, overflow: 'hidden' }}>
+                <button onClick={() => { setAdsType('netSales'); setHovered(null); }}
+                  style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'netSales' ? DEEP_GRN : WHITE, color: adsType === 'netSales' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'netSales' ? 600 : 400 }}>NetSales ADS</button>
+                <button onClick={() => { setAdsType('orderQty'); setHovered(null); }}
+                  style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'orderQty' ? DEEP_GRN : WHITE, color: adsType === 'orderQty' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'orderQty' ? 600 : 400 }}>OrderQty ADS</button>
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+            <span style={{ fontSize: 10, color: SOFT_GRN, whiteSpace: 'nowrap' }}>Compare:</span>
+            <button onClick={() => { setCompareMode('col'); setHovered(null); }}
+              style={{ fontSize: 10, padding: '3px 8px', borderRadius: 6, cursor: 'pointer', backgroundColor: compareMode === 'col' ? DEEP_GRN : WHITE, color: compareMode === 'col' ? WHITE : DEEP_GRN, border: `1.5px solid ${compareMode === 'col' ? DEEP_GRN : BORDER}`, fontWeight: compareMode === 'col' ? 600 : 400 }}>vs Column</button>
+            <button onClick={() => { setCompareMode('self'); setHovered(null); }}
+              style={{ fontSize: 10, padding: '3px 8px', borderRadius: 6, cursor: 'pointer', backgroundColor: compareMode === 'self' ? DEEP_GRN : WHITE, color: compareMode === 'self' ? WHITE : DEEP_GRN, border: `1.5px solid ${compareMode === 'self' ? DEEP_GRN : BORDER}`, fontWeight: compareMode === 'self' ? 600 : 400 }}>vs Self</button>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 10, color: SOFT_GRN }}>
+            <span>Below {compareMode === 'col' ? 'Column ADS' : 'Own ADS'}</span>
+            {[0.2, 0.4, 0.6, 0.8, 1.0].map(t => <div key={t} style={{ width: 20, height: 15, borderRadius: 3, backgroundColor: brightCellBg(-t, 1) }} />)}
+            <span style={{ marginLeft: 4 }}>Neutral</span>
+            <div style={{ width: 20, height: 15, borderRadius: 3, backgroundColor: '#EDF3E8' }} />
+            <span style={{ marginLeft: 4 }}>Above {compareMode === 'col' ? 'Column ADS' : 'Own ADS'}</span>
+            {[0.2, 0.4, 0.6, 0.8, 1.0].map(t => <div key={t} style={{ width: 20, height: 15, borderRadius: 3, backgroundColor: brightCellBg(t, 1) }} />)}
+          </div>
+        </div>
+      </div>
+
+      {/* Heatmap */}
+      {sortedEntities.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: 32, color: SOFT_GRN, fontSize: 13 }}>No data for selected filters.</div>
+      ) : (
+        <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 310px)' }}>
+          {/* Tooltip */}
+          {hovered && (
+            <div style={{ position: 'fixed', left: hovered.x + 14, top: hovered.y + 14, zIndex: 9999, backgroundColor: WHITE, border: `1.5px solid ${DEEP_GRN}`, borderRadius: 8, padding: '10px 14px', boxShadow: '0 6px 24px rgba(0,0,0,0.18)', minWidth: 220, pointerEvents: 'none' }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: DEEP_GRN, marginBottom: 2 }}>{disp(hovered.entityName, view === 'outlet')}</div>
+              <div style={{ fontSize: 11, color: SOFT_GRN, marginBottom: 8, lineHeight: 1.4 }}>
+                {hovered.category && <span style={{ backgroundColor: '#EDF3E8', borderRadius: 4, padding: '1px 5px', marginRight: 6 }}>{hovered.category}</span>}
+                {fmtPeriodHeader(hovered.periodKey, period)}
+                {fmtPeriodSub(hovered.periodKey, period) && <><br /><span style={{ fontSize: 9 }}>{fmtPeriodSub(hovered.periodKey, period)}</span></>}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20 }}><span style={{ color: '#888' }}>Period ADS</span><span style={{ color: DEEP_GRN, fontWeight: 600 }}>{hovered.periodAds !== null ? fmtK(hovered.periodAds) : '–'}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20 }}><span style={{ color: '#888' }}>Column ADS</span><span style={{ color: DEEP_GRN, fontWeight: 600 }}>{fmtK(hovered.colAds)}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20 }}><span style={{ color: '#888' }}>Own ADS</span><span style={{ color: DEEP_GRN, fontWeight: 600 }}>{fmtK(hovered.selfAds)}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20 }}><span style={{ color: '#888' }}>ATH (Self)</span><span style={{ color: '#7B3F9E', fontWeight: 600 }}>{fmtK(hovered.athSelf)}</span></div>
+                <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 5, marginTop: 2, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20 }}><span style={{ color: '#888' }}>vs Column</span><span style={{ color: hovered.colDev >= 0 ? '#2E7D32' : '#1565C0', fontWeight: 600 }}>{hovered.periodAds !== null && hovered.colAdsValue > 0 ? `${((hovered.periodAds - hovered.colAdsValue) / hovered.colAdsValue * 100).toFixed(1)}%` : '–'}</span></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20 }}><span style={{ color: '#888' }}>vs Self</span><span style={{ color: hovered.selfDev >= 0 ? '#2E7D32' : '#1565C0', fontWeight: 600 }}>{hovered.periodAds !== null && hovered.selfAds > 0 ? `${((hovered.periodAds - hovered.selfAds) / hovered.selfAds * 100).toFixed(1)}%` : '–'}</span></div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <table style={{ borderCollapse: 'collapse', minWidth: gridDates.length * 44 + 160 }}>
+            <thead>
+              <tr>
+                <th style={{ position: 'sticky', left: 0, top: 0, zIndex: 30, backgroundColor: WHITE, padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: DEEP_GRN, borderRight: `2px solid ${BORDER}`, borderBottom: `2px solid ${BORDER}` }}>{entityLabel}</th>
+                <th style={{ position: 'sticky', top: 0, zIndex: 29, backgroundColor: WHITE, padding: '8px 10px', textAlign: 'right', fontSize: 11, fontWeight: 600, color: DEEP_GRN, borderBottom: `2px solid ${BORDER}`, minWidth: 64, borderRight: `1px solid ${BORDER}` }}>ADS</th>
+                {gridDates.map(d => (
+                  <th key={d} style={{ padding: '5px 3px', textAlign: 'center', fontSize: 10, color: DEEP_GRN, borderBottom: `1px solid ${BORDER}`, minWidth: 44 }}>
+                    <span style={{ fontSize: 10, fontWeight: 500 }}>{fmtPeriodHeader(d, period)}</span>
+                    {fmtPeriodSub(d, period) && <><br /><span style={{ fontSize: 8, color: SOFT_GRN }}>{fmtPeriodSub(d, period)}</span></>}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sortedEntities.map((code: string) => {
+                const isGrouped = code === '__GROUPED__';
+                const groupedPeriodMap = isGrouped
+                  ? (() => {
+                      const m = new Map<string, { sum: number; count: number }>();
+                      for (const [, pm] of cellMap) {
+                        for (const [pk, cell] of pm) {
+                          const acc = m.get(pk) ?? { sum: 0, count: 0 };
+                          m.set(pk, { sum: acc.sum + cell.sum, count: acc.count + cell.count });
+                        }
+                      }
+                      return m;
+                    })()
+                  : new Map<string, { sum: number; count: number }>();
+                const overallGroupedADS = isGrouped
+                  ? (() => { let s = 0, n = 0; for (const [, v] of sumMap) { s += v; } for (const [, pm] of cellMap) { for (const [, c] of pm) { n += c.count; } } return n > 0 ? s / n : 0; })()
+                  : 0;
+                const ads = isGrouped ? overallGroupedADS : (adsMap.get(code) ?? 0);
+                const dateMap = isGrouped ? groupedPeriodMap : (cellMap.get(code) ?? new Map());
+                const rowLabel = isGrouped ? `All ${entityLabel}s` : (disp(entityNames[code] ?? code, view === 'outlet'));
+                return (
+                  <tr key={code}>
+                    <td style={{ position: 'sticky', left: 0, zIndex: 5, backgroundColor: WHITE, padding: '5px 10px', fontSize: 11, fontWeight: isGrouped ? 600 : 500, color: DEEP_GRN, borderRight: `2px solid ${BORDER}`, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{disp(rowLabel, view === 'outlet')}</td>
+                    <td style={{ padding: '5px 10px', textAlign: 'right', fontSize: 11, borderRight: `1px solid ${BORDER}`, color: DEEP_GRN, fontWeight: 600 }}>{fmtK(ads)}</td>
+                    {gridDates.map(d => {
+                      const cell = dateMap.get(d) ?? null;
+                      const periodAds = cell !== null && cell.count > 0 ? cell.sum / cell.count : null;
+                      const colAds = compareMode === 'col' ? (colAdsMap.get(d) ?? 0) : ads;
+                      const dev = periodAds !== null && colAds > 0 ? (periodAds - colAds) / colAds : 0;
+                      const bg = brightCellBg(dev, 1);
+                      const fg = brightCellFg(dev);
+                      const cellLabel = periodAds !== null ? (periodAds >= 1000 ? `${(periodAds / 1000).toFixed(1)}k` : periodAds >= 100 ? periodAds.toFixed(0) : (adsType === 'orderQty' ? periodAds.toFixed(0) : periodAds.toFixed(1))) : null;
+                      const selfAdsVal = ads;
+                      return (
+                        <td key={d}
+                          onMouseEnter={e => {
+                            if (periodAds !== null) {
+                              setHovered({ entity: code, entityName: rowLabel, category: '', periodKey: d, periodAds, colAdsValue: colAds, colAds, selfAds: selfAdsVal, athSelf: athSelfMap.get(code) ?? 0, colDev: colAds > 0 ? (periodAds - colAds) / colAds : 0, selfDev: selfAdsVal > 0 ? (periodAds - selfAdsVal) / selfAdsVal : 0, x: (e as unknown as MouseEvent).clientX, y: (e as unknown as MouseEvent).clientY });
+                            }
+                          }}
+                          onMouseLeave={() => setHovered(null)}
+                          style={{ padding: '5px 2px', textAlign: 'center', fontSize: 10, fontWeight: 500, backgroundColor: bg, color: fg, borderRight: `1px solid ${BORDER}`, cursor: periodAds !== null ? 'pointer' : 'default', minWidth: 44 }}>
+                          {cellLabel}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div style={{ fontSize: 10, textAlign: 'center', color: SOFT_GRN, padding: '8px 0' }}>
+        ADS = total NetSales ÷ days with transactions &nbsp;·&nbsp;
+        {view === 'outlet' ? 'CSV: outlet-ads-heatmap/data/outlet_daily_sales.csv' : 'CSV: outlet-ads-heatmap/data/sku_daily_sales.csv'}
       </div>
     </div>
   );

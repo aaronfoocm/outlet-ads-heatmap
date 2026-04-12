@@ -65,6 +65,8 @@ export default function HeatmapPage() {
   const [adsType, setAdsType] = useState<'netSales' | 'orderQty'>('netSales');
   // 'per' = each entity individually, 'all' = single combined row, 'group' = by category/channel
   const [groupBy, setGroupBy] = useState<'per' | 'all' | 'group'>('per');
+  // SKU sub-toggle: 'name' collapses variants (current), 'code' shows each SKU separately
+
   const [selectedEntities, setSelectedEntities] = useState<string[]>([]);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
@@ -72,9 +74,12 @@ export default function HeatmapPage() {
   const [catDropdownOpen, setCatDropdownOpen] = useState(false);
   const [channelDropdownOpen, setChannelDropdownOpen] = useState(false);
   const catDropdownRef = useRef<HTMLDivElement>(null);
+  const [focusedCatOptionIdx, setFocusedCatOptionIdx] = useState(-1);
   const channelDropdownRef = useRef<HTMLDivElement>(null);
+  const [focusedChannelOptionIdx, setFocusedChannelOptionIdx] = useState(-1);
   const [hovered, setHovered] = useState<{entity:string;entityName:string;category:string;periodKey:string;periodAds:number|null;colAdsValue:number;colAds:number;selfAds:number;athSelf:number;colDev:number;selfDev:number;x:number;y:number}|null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const [focusedOptionIdx, setFocusedOptionIdx] = useState(-1);
 
   const csvUrl = view === 'outlet' ? '/data/outlet_daily_sales.csv?v=6' : '/data/sku_daily_sales.csv?v=1';
   const { data: rawCsv, isLoading } = useSWR(csvUrl, fetchCSV, { refreshInterval: 86400000, revalidateOnFocus: true, revalidateOnMount: true });
@@ -89,8 +94,9 @@ export default function HeatmapPage() {
 
   useEffect(() => {
     if (!minDate) return;
+    const today = new Date().toISOString().slice(0, 10);
     setStartDate(dateAddDays(maxDate, -89));
-    setEndDate(maxDate);
+    setEndDate(maxDate > today ? today : maxDate);
   }, [minDate, maxDate]);
 
   useEffect(() => {
@@ -109,6 +115,74 @@ export default function HeatmapPage() {
     return () => window.removeEventListener('scroll', handleScroll, true);
   }, []);
 
+  // ── Dropdown keyboard navigation ───────────────────────────────
+  const handleEntityDropdownKeyDown = useCallback((e: React.KeyboardEvent, options: string[]) => {
+    if (!dropdownOpen) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setFocusedOptionIdx(i => Math.min(i + 1, options.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setFocusedOptionIdx(i => Math.max(i - 1, -1));
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (focusedOptionIdx >= 0 && focusedOptionIdx < options.length) {
+        toggleEntity(options[focusedOptionIdx]);
+        setHovered(null);
+      }
+    } else if (e.key === 'Escape') {
+      setDropdownOpen(false);
+      setFocusedOptionIdx(-1);
+    }
+  }, [dropdownOpen, focusedOptionIdx]);
+
+  const handleCatDropdownKeyDown = useCallback((e: React.KeyboardEvent, options: string[]) => {
+    if (!catDropdownOpen) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setFocusedCatOptionIdx(i => Math.min(i + 1, options.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setFocusedCatOptionIdx(i => Math.max(i - 1, -1));
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (focusedCatOptionIdx >= 0 && focusedCatOptionIdx < options.length) {
+        const cat = options[focusedCatOptionIdx];
+        setSelectedCategories(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]);
+        setHovered(null);
+      }
+    } else if (e.key === 'Escape') {
+      setCatDropdownOpen(false);
+      setFocusedCatOptionIdx(-1);
+    }
+  }, [catDropdownOpen, focusedCatOptionIdx]);
+
+  const handleChannelDropdownKeyDown = useCallback((e: React.KeyboardEvent, options: string[]) => {
+    if (!channelDropdownOpen) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setFocusedChannelOptionIdx(i => Math.min(i + 1, options.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setFocusedChannelOptionIdx(i => Math.max(i - 1, -1));
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (focusedChannelOptionIdx >= 0 && focusedChannelOptionIdx < options.length) {
+        const ch = options[focusedChannelOptionIdx];
+        setSelectedChannels(prev => prev.includes(ch) ? prev.filter(c => c !== ch) : [...prev, ch]);
+        setHovered(null);
+      }
+    } else if (e.key === 'Escape') {
+      setChannelDropdownOpen(false);
+      setFocusedChannelOptionIdx(-1);
+    }
+  }, [channelDropdownOpen, focusedChannelOptionIdx]);
+
+  // Reset focused index when dropdown closes
+  useEffect(() => { if (!dropdownOpen) setFocusedOptionIdx(-1); }, [dropdownOpen]);
+  useEffect(() => { if (!catDropdownOpen) setFocusedCatOptionIdx(-1); }, [catDropdownOpen]);
+  useEffect(() => { if (!channelDropdownOpen) setFocusedChannelOptionIdx(-1); }, [channelDropdownOpen]);
+
   // ── Derived data ──────────────────────────────────────────────
   const toggleEntity = useCallback((code: string) => {
     setSelectedEntities(prev => prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]);
@@ -123,16 +197,18 @@ export default function HeatmapPage() {
   const { adsMap, cellMap, colAdsMap, gridDates, overallAds, athSelfMap, sumMap } = useMemo(() => {
     const totals = new Map<string, { total: number; count: number }>();
     const pcells = new Map<string, Map<string, { sum: number; count: number }>>();
+    const maxAllowedDate = new Date().toISOString().slice(0, 10);
     for (const r of allRows) {
       const d = toSortable(r.date);
       if (d < startDate || d > endDate) continue;
+      if (d > maxAllowedDate) continue;
       if (selectedEntities.length > 0 && !selectedEntities.includes(r.entityCode)) continue;
       if (selectedCategories.length > 0 && !selectedCategories.includes(r.category)) continue;
       if (selectedChannels.length > 0 && !selectedChannels.includes(r.mainChannel)) continue;
       const pKey = getPeriodRange(d, period);
       const val = metricVal(r);
-      // Key by entityName so same product across sizes/variants groups together
-      const rowKey = r.entityName || r.entityCode;
+      // Key by entityCode — stable unique identifier
+      const rowKey = r.entityCode;
       const acc = totals.get(rowKey) ?? { total: 0, count: 0 };
       totals.set(rowKey, { total: acc.total + val, count: acc.count + 1 });
       if (!pcells.has(rowKey)) pcells.set(rowKey, new Map());
@@ -142,8 +218,8 @@ export default function HeatmapPage() {
 
     const ads = new Map<string, number>();
     for (const [code, v] of totals) ads.set(code, v.count > 0 ? v.total / v.count : 0);
-    // Ensure all entityNames are in the name map
-    for (const r of allRows) { if (!entityNames[r.entityName]) entityNames[r.entityName] = r.entityName; }
+    // Ensure all entityCodes have a name entry (entityNames is already keyed by entityCode from parseSalesCSV)
+    for (const r of allRows) { if (!entityNames[r.entityCode]) entityNames[r.entityCode] = r.entityName; }
 
     const colAds = new Map<string, number>();
     const periods = [...new Set([...pcells.values()].flatMap(m => [...m.keys()]))].sort();
@@ -185,14 +261,11 @@ export default function HeatmapPage() {
   const { groupAdsMap, groupCellMap, groupSumMap } = useMemo(() => {
     const gTotals = new Map<string, { total: number; count: number }>();
     const gCells = new Map<string, Map<string, { sum: number; count: number }>>();
-    const gAllRows = allRows.filter(r => {
-      if (r.entityName || r.entityCode) return true;
-      return false;
-    });
+    const gAllRows = allRows.filter(r => !!r.entityCode);
     for (const r of gAllRows) {
       const d = toSortable(r.date);
       if (d < startDate || d > endDate) continue;
-      if (selectedEntities.length > 0 && !(selectedEntities.includes(r.entityName) || selectedEntities.includes(r.entityCode))) continue;
+      if (selectedEntities.length > 0 && !selectedEntities.includes(r.entityCode)) continue;
       if (selectedCategories.length > 0 && !selectedCategories.includes(r.category)) continue;
       if (selectedChannels.length > 0 && !selectedChannels.includes(r.mainChannel)) continue;
       const grpDim = view === 'sku' ? 'mainChannel' : 'category';
@@ -213,29 +286,49 @@ export default function HeatmapPage() {
     return { groupAdsMap: gAds, groupCellMap: gCells, groupSumMap: gSum };
   }, [allRows, startDate, endDate, period, selectedEntities, selectedCategories, selectedChannels, adsType]);
 
-  // Use entityName as the unique row identifier — groups same product across sizes/variants
-  const allEntityNames = useMemo(() => [...new Set(allRows.map(r => r.entityName || r.entityCode))].sort(), [allRows]);
-  // 'group' mode groups by category (outlets) or channel (SKUs)
-  const groupDimension = view === 'sku' ? 'mainChannel' : 'category';
-  const allGroups = useMemo(() => {
-    if (view === 'sku') return [...new Set(allRows.map(r => r.mainChannel).filter(Boolean))].sort();
-    return [...new Set(allRows.map(r => r.category).filter(Boolean))].sort();
-  }, [allRows, view]);
+  // Unfiltered group sums for sort-ordering all group rows (so channel/category filter
+  // doesn't determine which rows appear — only which entities feed into each group).
+  const { allGroups, groupUnfilteredSumMap } = useMemo(() => {
+    const grpDim = view === 'sku' ? 'mainChannel' : 'category';
+    const maxAllowedDate = new Date().toISOString().slice(0, 10);
+    const validRows = allRows.filter(r => {
+      const d = toSortable(r.date);
+      return d >= startDate && d <= endDate && d <= maxAllowedDate;
+    });
+    const groups = [...new Set(validRows.map(r => grpDim === 'mainChannel' ? r.mainChannel : r.category).filter(Boolean))].sort();
+    // Compute unfiltered total per group across the full dataset (date-filtered only)
+    const unfilteredTotals = new Map<string, number>();
+    for (const r of validRows) {
+      const grp = grpDim === 'mainChannel' ? r.mainChannel : r.category;
+      if (!grp) continue;
+      const val = adsType === 'orderQty' ? r.orderQty : r.netSales;
+      unfilteredTotals.set(grp, (unfilteredTotals.get(grp) ?? 0) + val);
+    }
+    return { allGroups: groups, groupUnfilteredSumMap: unfilteredTotals };
+  }, [allRows, startDate, endDate, view, adsType]);
+
+  // Use entityCode as the unique row identifier — entityName is display-only
+  const allEntityCodes = useMemo(() => [...new Set(allRows.map(r => r.entityCode))].sort(), [allRows]);
 
   const outletsInScope = (selectedCategories.length > 0 || selectedChannels.length > 0)
     ? [...new Set(allRows.filter(r =>
         (selectedCategories.length === 0 || selectedCategories.includes(r.category)) &&
         (selectedChannels.length === 0 || selectedChannels.includes(r.mainChannel))
-      ).map(r => r.entityName || r.entityCode))]
-    : allEntityNames;
+      ).map(r => r.entityCode))]
+    : allEntityCodes;
 
   // Build sortedEntities based on groupBy mode
   const sortedEntities = (() => {
     if (groupBy === 'all') return ['__ALL__'] as string[];
     if (groupBy === 'group') {
-      return allGroups.filter(g => groupSumMap.has(g)).sort((a, b) => (groupSumMap.get(b) ?? 0) - (groupSumMap.get(a) ?? 0));
+      // Use unfiltered sums so ALL groups appear as rows regardless of channel/category filter.
+      // Only groups with actual data (groupUnfilteredSumMap.has(g)) are shown.
+      return allGroups.filter(g => groupUnfilteredSumMap.has(g)).sort((a, b) => (groupUnfilteredSumMap.get(b) ?? 0) - (groupUnfilteredSumMap.get(a) ?? 0));
     }
-    return outletsInScope.filter((code: string) => cellMap.has(code)).sort((a: string, b: string) => (sumMap.get(b) ?? 0) - (sumMap.get(a) ?? 0));
+    return outletsInScope.filter((code: string) =>
+      cellMap.has(code) &&
+      (selectedEntities.length === 0 || selectedEntities.includes(code))
+    ).sort((a: string, b: string) => (sumMap.get(b) ?? 0) - (sumMap.get(a) ?? 0));
   })();
 
   // ── Conditional returns AFTER all hooks ────────────────────────
@@ -251,6 +344,14 @@ export default function HeatmapPage() {
 
   return (
     <div style={{ backgroundColor: CREAM, minHeight: '100vh', fontFamily: 'system-ui, sans-serif' }}>
+      {/* Accessibility: focus ring styles via CSS custom property */}
+      <style>{`
+        :root { --focus-ring: #2D5016; }
+        button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+        input[type="date"]:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-color: var(--focus-ring) !important; }
+        /* Dropdown options: keyboard-focused highlight */
+        .dropdown-option:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; border-radius: 4px; }
+      `}</style>
       {/* ── Header ── */}
       <div style={{ backgroundColor: WHITE, borderBottom: `2px solid ${BORDER}`, padding: '12px 20px', position: 'sticky', top: 0, zIndex: 50 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
@@ -264,24 +365,25 @@ export default function HeatmapPage() {
           {/* Tab switcher */}
           <div style={{ display: 'flex', gap: 0, marginLeft: 'auto', border: `1.5px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden' }}>
             {(['outlet', 'sku'] as EntityType[]).map(v => (
-              <button key={v} onClick={() => { setView(v); setSelectedEntities([]); setSelectedCategories([]); setSelectedChannels([]); setHovered(null); setGroupBy('per'); setCompareMode('self'); }}
+              <button key={v} type="button" onClick={() => { setView(v); setSelectedEntities([]); setSelectedCategories([]); setSelectedChannels([]); setHovered(null); setGroupBy('per'); setCompareMode('self'); }}
                 style={{ fontSize: 11, padding: '5px 14px', cursor: 'pointer', backgroundColor: view === v ? DEEP_GRN : WHITE, color: view === v ? WHITE : DEEP_GRN, border: 'none', fontWeight: view === v ? 600 : 400, outline: 'none' }}>
                 {v === 'outlet' ? 'Outlet' : 'SKU'}
               </button>
             ))}
+
           </div>
 
           {/* Individual / Grouped toggle */}
           <div style={{ display: 'flex', gap: 0, border: `1.5px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden' }}>
-            <button onClick={() => { setGroupBy('per'); setCompareMode('self'); setHovered(null); }}
+            <button type="button" onClick={() => { setGroupBy('per'); setCompareMode('self'); setHovered(null); }}
               style={{ fontSize: 11, padding: '5px 14px', cursor: 'pointer', backgroundColor: groupBy === 'per' ? DEEP_GRN : WHITE, color: groupBy === 'per' ? WHITE : DEEP_GRN, border: 'none', fontWeight: groupBy === 'per' ? 600 : 400, outline: 'none' }}>
               Per {entityLabel}
             </button>
-            <button onClick={() => { setGroupBy('all'); setCompareMode('col'); setHovered(null); }}
+            <button type="button" onClick={() => { setGroupBy('all'); setCompareMode('col'); setHovered(null); }}
               style={{ fontSize: 11, padding: '5px 14px', cursor: 'pointer', backgroundColor: groupBy === 'all' ? DEEP_GRN : WHITE, color: groupBy === 'all' ? WHITE : DEEP_GRN, border: 'none', fontWeight: groupBy === 'all' ? 600 : 400, outline: 'none' }}>
               All {entityLabel}s
             </button>
-            <button onClick={() => { setGroupBy('group'); setCompareMode('col'); setHovered(null); }}
+            <button type="button" onClick={() => { setGroupBy('group'); setCompareMode('col'); setHovered(null); }}
               style={{ fontSize: 11, padding: '5px 14px', cursor: 'pointer', backgroundColor: groupBy === 'group' ? DEEP_GRN : WHITE, color: groupBy === 'group' ? WHITE : DEEP_GRN, border: 'none', fontWeight: groupBy === 'group' ? 600 : 400, outline: 'none' }}>
               Per {view === 'sku' ? 'Channel' : 'Category'}
             </button>
@@ -292,8 +394,8 @@ export default function HeatmapPage() {
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginTop: 10 }}>
           {/* Period */}
           {(['Day', 'Week', 'Month', 'Quarter'] as Period[]).map(p => (
-            <button key={p} onClick={() => { setPeriod(p); setHovered(null); }}
-              style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', backgroundColor: period === p ? DEEP_GRN : WHITE, color: period === p ? WHITE : DEEP_GRN, border: `1px solid ${period === p ? DEEP_GRN : BORDER}`, fontWeight: period === p ? 600 : 400 }}>
+            <button type="button" key={p} onClick={() => { setPeriod(p); setHovered(null); }}
+              style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', backgroundColor: period === p ? DEEP_GRN : WHITE, color: period === p ? WHITE : DEEP_GRN, border: `1px solid ${period === p ? DEEP_GRN : BORDER}`, fontWeight: period === p ? 600 : 400, outline: 'none' }}>
               {p}
             </button>
           ))}
@@ -310,24 +412,31 @@ export default function HeatmapPage() {
 
           {/* Entity filter dropdown */}
           <div style={{ position: 'relative' }} ref={dropdownRef}>
-            <button onClick={() => setDropdownOpen(o => !o)}
-              style={{ fontSize: 11, padding: '6px 12px', borderRadius: 6, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1.5px solid ${BORDER}`, display: 'flex', alignItems: 'center', gap: 6 }}>
-              {selectedEntities.length === 0 ? `All ${entityLabel.toLowerCase()}s (${allEntityNames.length})` : `${selectedEntities.length} selected`}
+            <button type="button" aria-haspopup="listbox" aria-expanded={dropdownOpen} aria-label={`Filter by ${entityLabel.toLowerCase()}: ${selectedEntities.length === 0 ? `all selected` : `${selectedEntities.length} selected`}`}
+              onClick={() => setDropdownOpen(o => !o)}
+              style={{ fontSize: 11, padding: '6px 12px', borderRadius: 6, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1.5px solid ${BORDER}`, display: 'flex', alignItems: 'center', gap: 6, outline: 'none' }}>
+              {selectedEntities.length === 0 ? `All ${entityLabel.toLowerCase()}s (${allEntityCodes.length})` : `${selectedEntities.length} selected`}
               <span style={{ fontSize: 9, color: SOFT_GRN }}>▼</span>
             </button>
             {dropdownOpen && (
-              <div style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 100, backgroundColor: WHITE, border: `1.5px solid ${BORDER}`, borderRadius: 8, padding: 8, minWidth: 240, boxShadow: '0 4px 12px rgba(0,0,0,0.12)', maxHeight: 300, overflowY: 'auto' }}>
+              <div role="listbox" aria-multiselectable="true" aria-label={`${entityLabel} options`}
+                style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 100, backgroundColor: WHITE, border: `1.5px solid ${BORDER}`, borderRadius: 8, padding: 8, minWidth: 240, boxShadow: '0 4px 12px rgba(0,0,0,0.12)', maxHeight: 300, overflowY: 'auto' }}
+                onKeyDown={e => handleEntityDropdownKeyDown(e, allEntityCodes)}>
                 <div style={{ display: 'flex', gap: 8, marginBottom: 8, paddingBottom: 8, borderBottom: `1px solid ${BORDER}` }}>
-                  <button onClick={() => { setSelectedEntities([]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}` }}>All</button>
-                  <button onClick={() => { setSelectedEntities([...allEntityNames]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}` }}>None</button>
+                  <button type="button" onClick={() => { setSelectedEntities([]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>All</button>
+                  <button type="button" onClick={() => { setSelectedEntities([...allEntityCodes]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>None</button>
                 </div>
-                {allEntityNames.map((name: string) => {
-                  const checked = selectedEntities.includes(name);
+                {allEntityCodes.map((code: string, i: number) => {
+                  const checked = selectedEntities.includes(code);
+                  const label = view === 'outlet' ? disp(entityNames[code] ?? code, true) : (entityNames[code] ?? code);
                   return (
-                    <label key={name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', cursor: 'pointer' }}>
-                      <input type="checkbox" checked={checked} onChange={() => { toggleEntity(name); setHovered(null); }} style={{ cursor: 'pointer' }} />
-                      <span style={{ fontSize: 11, color: DEEP_GRN }}>{disp(name, view === 'outlet')}</span>
-                    </label>
+                    <div key={code} role="option" aria-selected={checked} tabIndex={focusedOptionIdx === i ? 0 : -1}
+                      className="dropdown-option"
+                      onClick={() => { toggleEntity(code); setHovered(null); }}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 4px', cursor: 'pointer', borderRadius: 4, backgroundColor: focusedOptionIdx === i ? '#EDF3E8' : 'transparent' }}>
+                      <input type="checkbox" checked={checked} onChange={() => { toggleEntity(code); setHovered(null); }} style={{ cursor: 'pointer', pointerEvents: 'none' }} tabIndex={-1} aria-hidden="true" />
+                      <span style={{ fontSize: 11, color: DEEP_GRN }}>{label}</span>
+                    </div>
                   );
                 })}
               </div>
@@ -336,24 +445,30 @@ export default function HeatmapPage() {
 
           {/* Category filter */}
           <div style={{ position: 'relative' }} ref={catDropdownRef}>
-            <button onClick={() => setCatDropdownOpen(o => !o)}
-              style={{ fontSize: 11, padding: '6px 12px', borderRadius: 6, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1.5px solid ${BORDER}`, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button type="button" aria-haspopup="listbox" aria-expanded={catDropdownOpen} aria-label={`Filter by category: ${selectedCategories.length === 0 ? `all selected` : `${selectedCategories.length} selected`}`}
+              onClick={() => setCatDropdownOpen(o => !o)}
+              style={{ fontSize: 11, padding: '6px 12px', borderRadius: 6, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1.5px solid ${BORDER}`, display: 'flex', alignItems: 'center', gap: 6, outline: 'none' }}>
               {selectedCategories.length === 0 ? `All Categories (${categories.length})` : `${selectedCategories.length} selected`}
               <span style={{ fontSize: 9, color: SOFT_GRN }}>▼</span>
             </button>
             {catDropdownOpen && (
-              <div style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 100, backgroundColor: WHITE, border: `1.5px solid ${BORDER}`, borderRadius: 8, padding: 8, minWidth: 200, boxShadow: '0 4px 12px rgba(0,0,0,0.12)', maxHeight: 280, overflowY: 'auto' }}>
+              <div role="listbox" aria-multiselectable="true" aria-label="Category options"
+                style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 100, backgroundColor: WHITE, border: `1.5px solid ${BORDER}`, borderRadius: 8, padding: 8, minWidth: 200, boxShadow: '0 4px 12px rgba(0,0,0,0.12)', maxHeight: 280, overflowY: 'auto' }}
+                onKeyDown={e => handleCatDropdownKeyDown(e, categories)}>
                 <div style={{ display: 'flex', gap: 8, marginBottom: 8, paddingBottom: 8, borderBottom: `1px solid ${BORDER}` }}>
-                  <button onClick={() => { setSelectedCategories([]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}` }}>All</button>
-                  <button onClick={() => { setSelectedCategories([...categories]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}` }}>None</button>
+                  <button type="button" onClick={() => { setSelectedCategories([]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>All</button>
+                  <button type="button" onClick={() => { setSelectedCategories([...categories]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>None</button>
                 </div>
-                {categories.map((cat: string) => {
+                {categories.map((cat: string, i: number) => {
                   const checked = selectedCategories.includes(cat);
                   return (
-                    <label key={cat} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', cursor: 'pointer' }}>
-                      <input type="checkbox" checked={checked} onChange={() => { setSelectedCategories(prev => checked ? prev.filter(c => c !== cat) : [...prev, cat]); setHovered(null); }} style={{ cursor: 'pointer' }} />
+                    <div key={cat} role="option" aria-selected={checked} tabIndex={focusedCatOptionIdx === i ? 0 : -1}
+                      className="dropdown-option"
+                      onClick={() => { setSelectedCategories(prev => checked ? prev.filter(c => c !== cat) : [...prev, cat]); setHovered(null); }}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 4px', cursor: 'pointer', borderRadius: 4, backgroundColor: focusedCatOptionIdx === i ? '#EDF3E8' : 'transparent' }}>
+                      <input type="checkbox" checked={checked} onChange={() => { setSelectedCategories(prev => checked ? prev.filter(c => c !== cat) : [...prev, cat]); setHovered(null); }} style={{ cursor: 'pointer', pointerEvents: 'none' }} tabIndex={-1} aria-hidden="true" />
                       <span style={{ fontSize: 11, color: DEEP_GRN }}>{cat}</span>
-                    </label>
+                    </div>
                   );
                 })}
               </div>
@@ -363,24 +478,30 @@ export default function HeatmapPage() {
           {/* Channel filter — only shown for SKU view */}
           {view === 'sku' && channels.length > 0 && (
             <div style={{ position: 'relative' }} ref={channelDropdownRef}>
-              <button onClick={() => setChannelDropdownOpen(o => !o)}
-                style={{ fontSize: 11, padding: '6px 12px', borderRadius: 6, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1.5px solid ${BORDER}`, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <button type="button" aria-haspopup="listbox" aria-expanded={channelDropdownOpen} aria-label={`Filter by channel: ${selectedChannels.length === 0 ? `all selected` : `${selectedChannels.length} selected`}`}
+                onClick={() => setChannelDropdownOpen(o => !o)}
+                style={{ fontSize: 11, padding: '6px 12px', borderRadius: 6, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1.5px solid ${BORDER}`, display: 'flex', alignItems: 'center', gap: 6, outline: 'none' }}>
                 {selectedChannels.length === 0 ? `All Channels (${channels.length})` : `${selectedChannels.length} selected`}
                 <span style={{ fontSize: 9, color: SOFT_GRN }}>▼</span>
               </button>
               {channelDropdownOpen && (
-                <div style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 100, backgroundColor: WHITE, border: `1.5px solid ${BORDER}`, borderRadius: 8, padding: 8, minWidth: 200, boxShadow: '0 4px 12px rgba(0,0,0,0.12)', maxHeight: 280, overflowY: 'auto' }}>
+                <div role="listbox" aria-multiselectable="true" aria-label="Channel options"
+                  style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 100, backgroundColor: WHITE, border: `1.5px solid ${BORDER}`, borderRadius: 8, padding: 8, minWidth: 200, boxShadow: '0 4px 12px rgba(0,0,0,0.12)', maxHeight: 280, overflowY: 'auto' }}
+                  onKeyDown={e => handleChannelDropdownKeyDown(e, channels)}>
                   <div style={{ display: 'flex', gap: 8, marginBottom: 8, paddingBottom: 8, borderBottom: `1px solid ${BORDER}` }}>
-                    <button onClick={() => { setSelectedChannels([]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}` }}>All</button>
-                    <button onClick={() => { setSelectedChannels([...channels]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}` }}>None</button>
+                    <button type="button" onClick={() => { setSelectedChannels([]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>All</button>
+                    <button type="button" onClick={() => { setSelectedChannels([...channels]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>None</button>
                   </div>
-                  {channels.map((ch: string) => {
+                  {channels.map((ch: string, i: number) => {
                     const checked = selectedChannels.includes(ch);
                     return (
-                      <label key={ch} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', cursor: 'pointer' }}>
-                        <input type="checkbox" checked={checked} onChange={() => { setSelectedChannels(prev => checked ? prev.filter(c => c !== ch) : [...prev, ch]); setHovered(null); }} style={{ cursor: 'pointer' }} />
+                      <div key={ch} role="option" aria-selected={checked} tabIndex={focusedChannelOptionIdx === i ? 0 : -1}
+                        className="dropdown-option"
+                        onClick={() => { setSelectedChannels(prev => checked ? prev.filter(c => c !== ch) : [...prev, ch]); setHovered(null); }}
+                        style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 4px', cursor: 'pointer', borderRadius: 4, backgroundColor: focusedChannelOptionIdx === i ? '#EDF3E8' : 'transparent' }}>
+                        <input type="checkbox" checked={checked} onChange={() => { setSelectedChannels(prev => checked ? prev.filter(c => c !== ch) : [...prev, ch]); setHovered(null); }} style={{ cursor: 'pointer', pointerEvents: 'none' }} tabIndex={-1} aria-hidden="true" />
                         <span style={{ fontSize: 11, color: DEEP_GRN }}>{ch}</span>
-                      </label>
+                      </div>
                     );
                   })}
                 </div>
@@ -396,22 +517,23 @@ export default function HeatmapPage() {
             <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
               <span style={{ fontSize: 10, color: SOFT_GRN, whiteSpace: 'nowrap' }}>Metric:</span>
               <div style={{ display: 'flex', gap: 0, border: `1px solid ${BORDER}`, borderRadius: 6, overflow: 'hidden' }}>
-                <button onClick={() => { setAdsType('netSales'); setHovered(null); }}
-                  style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'netSales' ? DEEP_GRN : WHITE, color: adsType === 'netSales' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'netSales' ? 600 : 400 }}>NetSales ADS</button>
-                <button onClick={() => { setAdsType('orderQty'); setHovered(null); }}
-                  style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'orderQty' ? DEEP_GRN : WHITE, color: adsType === 'orderQty' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'orderQty' ? 600 : 400 }}>OrderQty ADS</button>
+                <button type="button" onClick={() => { setAdsType('netSales'); setHovered(null); }}
+                  style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'netSales' ? DEEP_GRN : WHITE, color: adsType === 'netSales' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'netSales' ? 600 : 400, outline: 'none' }}>NetSales ADS</button>
+                <button type="button" onClick={() => { setAdsType('orderQty'); setHovered(null); }}
+                  style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'orderQty' ? DEEP_GRN : WHITE, color: adsType === 'orderQty' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'orderQty' ? 600 : 400, outline: 'none' }}>OrderQty ADS</button>
               </div>
             </div>
           )}
 
           <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
             <span style={{ fontSize: 10, color: SOFT_GRN, whiteSpace: 'nowrap' }}>Compare:</span>
-            <button onClick={() => { setCompareMode('col'); setHovered(null); }}
-              style={{ fontSize: 10, padding: '3px 8px', borderRadius: 6, cursor: 'pointer', backgroundColor: compareMode === 'col' ? DEEP_GRN : WHITE, color: compareMode === 'col' ? WHITE : DEEP_GRN, border: `1.5px solid ${compareMode === 'col' ? DEEP_GRN : BORDER}`, fontWeight: compareMode === 'col' ? 600 : 400 }}>vs Column</button>
-            <button onClick={() => { setCompareMode('self'); setHovered(null); }}
-              style={{ fontSize: 10, padding: '3px 8px', borderRadius: 6, cursor: 'pointer', backgroundColor: compareMode === 'self' ? DEEP_GRN : WHITE, color: compareMode === 'self' ? WHITE : DEEP_GRN, border: `1.5px solid ${compareMode === 'self' ? DEEP_GRN : BORDER}`, fontWeight: compareMode === 'self' ? 600 : 400 }}>vs Self</button>
+            <button type="button" onClick={() => { setCompareMode('col'); setHovered(null); }}
+              style={{ fontSize: 10, padding: '3px 8px', borderRadius: 6, cursor: 'pointer', backgroundColor: compareMode === 'col' ? DEEP_GRN : WHITE, color: compareMode === 'col' ? WHITE : DEEP_GRN, border: `1.5px solid ${compareMode === 'col' ? DEEP_GRN : BORDER}`, fontWeight: compareMode === 'col' ? 600 : 400, outline: 'none' }}>vs Column</button>
+            <button type="button" onClick={() => { setCompareMode('self'); setHovered(null); }}
+              style={{ fontSize: 10, padding: '3px 8px', borderRadius: 6, cursor: 'pointer', backgroundColor: compareMode === 'self' ? DEEP_GRN : WHITE, color: compareMode === 'self' ? WHITE : DEEP_GRN, border: `1.5px solid ${compareMode === 'self' ? DEEP_GRN : BORDER}`, fontWeight: compareMode === 'self' ? 600 : 400, outline: 'none' }}>vs Self</button>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 10, color: SOFT_GRN }}>
+          <div role="img" aria-label={`Color legend: Below ${compareMode === 'col' ? 'Column ADS' : 'Own ADS'} (blue shades from light to dark), Neutral (light green), Above ${compareMode === 'col' ? 'Column ADS' : 'Own ADS'} (green shades from light to dark)`}
+            style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 10, color: SOFT_GRN }}>
             <span>Below {compareMode === 'col' ? 'Column ADS' : 'Own ADS'}</span>
             {[0.2, 0.4, 0.6, 0.8, 1.0].map(t => <div key={t} style={{ width: 20, height: 15, borderRadius: 3, backgroundColor: brightCellBg(-t, 1) }} />)}
             <span style={{ marginLeft: 4 }}>Neutral</span>
@@ -488,7 +610,7 @@ export default function HeatmapPage() {
                 const ads = isAll ? allADS : isGroupRow ? (groupAdsMap.get(code) ?? 0) : (adsMap.get(code) ?? 0);
                 const dateMap = isAll ? allPeriodMap : isGroupRow ? (groupCellMap.get(code) ?? new Map()) : (cellMap.get(code) ?? new Map());
 
-                const rowLabel = isAll ? `All ${entityLabel}s` : isGroupRow ? code : disp(entityNames[code] ?? code, view === 'outlet');
+                const rowLabel = isAll ? `All ${entityLabel}s` : isGroupRow ? code : view === 'outlet' ? disp(entityNames[code] ?? code, true) : (entityNames[code] ?? code);
                 const rowKey = isAll ? '__ALL__' : isGroupRow ? code : code;
 
                 return (

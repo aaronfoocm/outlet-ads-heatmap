@@ -1,4 +1,5 @@
 import { Period } from './heatmap-types';
+import { parse as csvParse } from 'csv-parse/sync';
 
 // ── Date helpers ───────────────────────────────────────
 
@@ -107,26 +108,6 @@ function getWeekNumber(d: Date): number {
 
 // ── CSV parser ───────────────────────────────────────
 
-export function parseCSVLine(line: string): string[] {
-  const result: string[] = [];
-  let inQuotes = false;
-  let field = '';
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') { field += '"'; i++; }
-      else inQuotes = !inQuotes;
-    } else if (ch === ',' && !inQuotes) {
-      result.push(field.trim());
-      field = '';
-    } else {
-      field += ch;
-    }
-  }
-  result.push(field.trim());
-  return result;
-}
-
 export function parseSalesCSV(text: string): {
   allRows: { date: string; entityCode: string; netSales: number; orderQty: number; entityName: string; category: string; mainChannel: string }[];
   entityCodes: string[];
@@ -136,36 +117,48 @@ export function parseSalesCSV(text: string): {
   minDate: string;
   maxDate: string;
 } {
-  const lines = text.trim().split('\n');
-  const header = parseCSVLine(lines[0]);
-  // Detect format: SKU CSV has 'OrderQty' in header, outlet CSV does not
-  const isSku = header.includes('OrderQty');
+  const records = csvParse(text, {
+    columns: true,
+    skip_empty_lines: true,
+    trim: true,
+    relax_column_count: true,
+  }) as Record<string, string>[];
+
+  // Detect format: SKU CSV has 'OrderQty' column, outlet CSV does not
+  const first = records[0];
+  const isSku = first && 'OrderQty' in first;
+
   const rows: { date: string; entityCode: string; netSales: number; orderQty: number; entityName: string; category: string; mainChannel: string }[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const c = parseCSVLine(lines[i]);
-    if (c.length < 3) continue;
-    if (!c[0] || !c[1] || !c[2]) continue;
-    if (c[0] === 'Date') continue;
-    const ns = parseFloat(c[2]);
+
+  for (const row of records) {
+    if (!row.Date || !row.SKUCode && !row.LocCode || !row.NetSales) continue;
+    const ns = parseFloat(row.NetSales);
     if (isNaN(ns)) continue;
+
+    let entityCode: string;
+    let entityName: string;
+    let category: string;
     let orderQty = 0;
-    let entityName = '';
-    let category = '';
     let mainChannel = '';
-    let entityCode = c[1];
+
     if (isSku) {
-      // SKU CSV: Date, SKUCode, NetSales, OrderQty, SKUName, Category, MainChannel
-      orderQty = c.length > 3 && c[3] ? parseFloat(c[3]) : 0;
-      entityName = c.length > 4 ? (c[4] ?? '') : '';
-      category = c.length > 5 ? (c[5] ?? '') : '';
-      mainChannel = c.length > 6 ? (c[6] ?? '') : '';
+      entityCode = row.SKUCode;
+      entityName = row.SKUName ?? '';
+      category = row.Category ?? '';
+      mainChannel = row.MainChannel ?? '';
+      if (row.OrderQty) {
+        const oq = parseFloat(row.OrderQty);
+        if (!isNaN(oq)) orderQty = oq;
+      }
     } else {
-      // Outlet CSV: Date, LocCode, NetSales, LocName, Category
-      entityName = c.length > 3 ? (c[3] ?? '') : '';
-      category = c.length > 4 ? (c[4] ?? '') : '';
+      entityCode = row.LocCode;
+      entityName = row.LocName ?? '';
+      category = row.Category ?? '';
     }
-    rows.push({ date: c[0], entityCode, netSales: ns, orderQty, entityName, category, mainChannel });
+
+    rows.push({ date: row.Date, entityCode, netSales: ns, orderQty, entityName, category, mainChannel });
   }
+
   const entityCodes = [...new Set(rows.map(r => r.entityCode))].sort();
   const entityNameMap: Record<string, string> = {};
   for (const r of rows) entityNameMap[r.entityCode] = r.entityName;

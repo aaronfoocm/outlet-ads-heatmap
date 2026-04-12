@@ -442,8 +442,8 @@ export default function HeatmapPage() {
                 style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 100, backgroundColor: WHITE, border: `1.5px solid ${BORDER}`, borderRadius: 8, padding: 8, minWidth: 240, boxShadow: '0 4px 12px rgba(0,0,0,0.12)', maxHeight: 300, overflowY: 'auto' }}
                 onKeyDown={e => handleEntityDropdownKeyDown(e, allEntityCodes)}>
                 <div style={{ display: 'flex', gap: 8, marginBottom: 8, paddingBottom: 8, borderBottom: `1px solid ${BORDER}` }}>
-                  <button type="button" onClick={() => { setSelectedEntities([]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>All</button>
-                  <button type="button" onClick={() => { setSelectedEntities([...allEntityCodes]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>None</button>
+                  <button type="button" onClick={() => { setSelectedEntities([...allEntityCodes]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>All</button>
+                  <button type="button" onClick={() => { setSelectedEntities([]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>None</button>
                 </div>
                 {allEntityCodes.map((code: string, i: number) => {
                   const checked = selectedEntities.includes(code);
@@ -475,8 +475,8 @@ export default function HeatmapPage() {
                 style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 100, backgroundColor: WHITE, border: `1.5px solid ${BORDER}`, borderRadius: 8, padding: 8, minWidth: 200, boxShadow: '0 4px 12px rgba(0,0,0,0.12)', maxHeight: 280, overflowY: 'auto' }}
                 onKeyDown={e => handleCatDropdownKeyDown(e, categories)}>
                 <div style={{ display: 'flex', gap: 8, marginBottom: 8, paddingBottom: 8, borderBottom: `1px solid ${BORDER}` }}>
-                  <button type="button" onClick={() => { setSelectedCategories([]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>All</button>
-                  <button type="button" onClick={() => { setSelectedCategories([...categories]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>None</button>
+                  <button type="button" onClick={() => { setSelectedCategories([...categories]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>All</button>
+                  <button type="button" onClick={() => { setSelectedCategories([]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>None</button>
                 </div>
                 {categories.map((cat: string, i: number) => {
                   const checked = selectedCategories.includes(cat);
@@ -508,8 +508,8 @@ export default function HeatmapPage() {
                   style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 100, backgroundColor: WHITE, border: `1.5px solid ${BORDER}`, borderRadius: 8, padding: 8, minWidth: 200, boxShadow: '0 4px 12px rgba(0,0,0,0.12)', maxHeight: 280, overflowY: 'auto' }}
                   onKeyDown={e => handleChannelDropdownKeyDown(e, channels)}>
                   <div style={{ display: 'flex', gap: 8, marginBottom: 8, paddingBottom: 8, borderBottom: `1px solid ${BORDER}` }}>
-                    <button type="button" onClick={() => { setSelectedChannels([]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>All</button>
-                    <button type="button" onClick={() => { setSelectedChannels([...channels]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>None</button>
+                    <button type="button" onClick={() => { setSelectedChannels([...channels]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>All</button>
+                    <button type="button" onClick={() => { setSelectedChannels([]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>None</button>
                   </div>
                   {channels.map((ch: string, i: number) => {
                     const checked = selectedChannels.includes(ch);

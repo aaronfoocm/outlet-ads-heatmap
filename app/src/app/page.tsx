@@ -80,6 +80,8 @@ export default function HeatmapPage() {
   const [hovered, setHovered] = useState<{entity:string;entityName:string;category:string;periodKey:string;periodAds:number|null;colAdsValue:number;colAds:number;selfAds:number;athSelf:number;colDev:number;selfDev:number;x:number;y:number}|null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [focusedOptionIdx, setFocusedOptionIdx] = useState(-1);
+  const [expandedCell, setExpandedCell] = useState<string | null>(null);
+  const [compareModeHint, setCompareModeHint] = useState<string | null>(null);
 
   const csvUrl = view === 'outlet' ? '/data/outlet_daily_sales.csv?v=6' : '/data/sku_daily_sales.csv?v=1';
   const { data: rawCsv, isLoading } = useSWR(csvUrl, fetchCSV, { refreshInterval: 86400000, revalidateOnFocus: true, revalidateOnMount: true });
@@ -182,6 +184,18 @@ export default function HeatmapPage() {
   useEffect(() => { if (!dropdownOpen) setFocusedOptionIdx(-1); }, [dropdownOpen]);
   useEffect(() => { if (!catDropdownOpen) setFocusedCatOptionIdx(-1); }, [catDropdownOpen]);
   useEffect(() => { if (!channelDropdownOpen) setFocusedChannelOptionIdx(-1); }, [channelDropdownOpen]);
+
+  // ── Compare mode auto-switch hint ───────────────────────────
+  useEffect(() => {
+    if (groupBy === 'all' || groupBy === 'group') {
+      if (compareMode !== 'col') {
+        setCompareMode('col');
+        setCompareModeHint('Compare set to vs Column');
+        const timer = setTimeout(() => setCompareModeHint(null), 3000);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [groupBy, compareMode]);
 
   // ── Derived data ──────────────────────────────────────────────
   const toggleEntity = useCallback((code: string) => {
@@ -361,6 +375,11 @@ export default function HeatmapPage() {
               {view === 'outlet' ? 'Outlet' : 'SKU'} · {groupBy === 'per' ? `${sortedEntities.length} ${entityLabel.toLowerCase()}${sortedEntities.length !== 1 ? 's' : ''}` : groupBy === 'all' ? 'All combined' : `${sortedEntities.length} ${view === 'sku' ? 'channels' : 'categories'}`} · {gridDates.length} {period.toLowerCase()}{gridDates.length !== 1 ? 's' : ''}
             </div>
           </div>
+          <button type="button"
+            onClick={() => { if (!isLoading && allRows.length) { const s = ['Entity Name', ...gridDates.map(d => fmtPeriodHeader(d, period)), 'Total ADS'].join(','); const rows = sortedEntities.map(code => { const isAll = code === '__ALL__'; const isGroupRow = groupBy === 'group'; const lbl = isAll ? `All ${entityLabel}s` : isGroupRow ? code : view === 'outlet' ? disp(entityNames[code] ?? code, true) : (entityNames[code] ?? code); const dm = isAll ? (() => { const m = new Map<string,{sum:number;count:number}>(); for (const[,pm] of cellMap) for (const[pk,c] of pm) { const a = m.get(pk)??{sum:0,count:0}; m.set(pk,{sum:a.sum+c.sum,count:a.count+c.count}); } return m; })() : isGroupRow ? (groupCellMap.get(code) ?? new Map()) : (cellMap.get(code) ?? new Map()); const pv = gridDates.map(d => { const c = dm.get(d); return c && c.count > 0 ? (c.sum/c.count).toFixed(2) : ''; }); const ta = isAll ? (() => { let s=0,n=0; for (const[,v] of sumMap){s+=v;} for (const[,pm] of cellMap){for(const[,c]of pm){n+=c.count;}} return n>0?s/n:0; })() : isGroupRow ? (groupAdsMap.get(code)??0) : (adsMap.get(code)??0); return [lbl,...pv,ta.toFixed(2)].join(','); }); const csv = [s,...rows].join('\n'); const b = new Blob([csv],{type:'text/csv'}); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href=u; a.download=`kopiku-heatmap-${view}-${new Date().toISOString().slice(0,10)}.csv`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(u); } }}
+            style={{ fontSize: 10, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1.5px solid ${BORDER}`, fontWeight: 500, outline: 'none' }}>
+            Export CSV
+          </button>
 
           {/* Tab switcher */}
           <div style={{ display: 'flex', gap: 0, marginLeft: 'auto', border: `1.5px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden' }}>
@@ -379,11 +398,11 @@ export default function HeatmapPage() {
               style={{ fontSize: 11, padding: '5px 14px', cursor: 'pointer', backgroundColor: groupBy === 'per' ? DEEP_GRN : WHITE, color: groupBy === 'per' ? WHITE : DEEP_GRN, border: 'none', fontWeight: groupBy === 'per' ? 600 : 400, outline: 'none' }}>
               Per {entityLabel}
             </button>
-            <button type="button" onClick={() => { setGroupBy('all'); setCompareMode('col'); setHovered(null); }}
+            <button type="button" onClick={() => { setGroupBy('all'); setHovered(null); }}
               style={{ fontSize: 11, padding: '5px 14px', cursor: 'pointer', backgroundColor: groupBy === 'all' ? DEEP_GRN : WHITE, color: groupBy === 'all' ? WHITE : DEEP_GRN, border: 'none', fontWeight: groupBy === 'all' ? 600 : 400, outline: 'none' }}>
               All {entityLabel}s
             </button>
-            <button type="button" onClick={() => { setGroupBy('group'); setCompareMode('col'); setHovered(null); }}
+            <button type="button" onClick={() => { setGroupBy('group'); setHovered(null); }}
               style={{ fontSize: 11, padding: '5px 14px', cursor: 'pointer', backgroundColor: groupBy === 'group' ? DEEP_GRN : WHITE, color: groupBy === 'group' ? WHITE : DEEP_GRN, border: 'none', fontWeight: groupBy === 'group' ? 600 : 400, outline: 'none' }}>
               Per {view === 'sku' ? 'Channel' : 'Category'}
             </button>
@@ -531,6 +550,7 @@ export default function HeatmapPage() {
               style={{ fontSize: 10, padding: '3px 8px', borderRadius: 6, cursor: 'pointer', backgroundColor: compareMode === 'col' ? DEEP_GRN : WHITE, color: compareMode === 'col' ? WHITE : DEEP_GRN, border: `1.5px solid ${compareMode === 'col' ? DEEP_GRN : BORDER}`, fontWeight: compareMode === 'col' ? 600 : 400, outline: 'none' }}>vs Column</button>
             <button type="button" onClick={() => { setCompareMode('self'); setHovered(null); }}
               style={{ fontSize: 10, padding: '3px 8px', borderRadius: 6, cursor: 'pointer', backgroundColor: compareMode === 'self' ? DEEP_GRN : WHITE, color: compareMode === 'self' ? WHITE : DEEP_GRN, border: `1.5px solid ${compareMode === 'self' ? DEEP_GRN : BORDER}`, fontWeight: compareMode === 'self' ? 600 : 400, outline: 'none' }}>vs Self</button>
+            {compareModeHint && <span style={{ fontSize: 9, color: '#999', fontStyle: 'italic', whiteSpace: 'nowrap' }}>{compareModeHint}</span>}
           </div>
           <div role="img" aria-label={`Color legend: Below ${compareMode === 'col' ? 'Column ADS' : 'Own ADS'} (blue shades from light to dark), Neutral (light green), Above ${compareMode === 'col' ? 'Column ADS' : 'Own ADS'} (green shades from light to dark)`}
             style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 10, color: SOFT_GRN }}>
@@ -630,7 +650,7 @@ export default function HeatmapPage() {
                         <td key={d}
                           onMouseEnter={e => {
                             if (periodAds !== null) {
-                              setHovered({ entity: rowKey, entityName: rowLabel, category: isGroupRow ? code : (allRows.find(r => (r.entityName || r.entityCode) === code)?.category ?? ''), periodKey: d, periodAds, colAdsValue: colAds, colAds, selfAds: selfAdsVal, athSelf: 0, colDev: colAds > 0 ? (periodAds - colAds) / colAds : 0, selfDev: selfAdsVal > 0 ? (periodAds - selfAdsVal) / selfAdsVal : 0, x: (e as unknown as MouseEvent).clientX, y: (e as unknown as MouseEvent).clientY });
+                              setHovered({ entity: rowKey, entityName: rowLabel, category: isGroupRow ? code : (allRows.find(r => (r.entityName || r.entityCode) === code)?.category ?? ''), periodKey: d, periodAds, colAdsValue: colAds, colAds, selfAds: selfAdsVal, athSelf: isGroupRow ? 0 : (athSelfMap.get(code) ?? 0), colDev: colAds > 0 ? (periodAds - colAds) / colAds : 0, selfDev: selfAdsVal > 0 ? (periodAds - selfAdsVal) / selfAdsVal : 0, x: (e as unknown as MouseEvent).clientX, y: (e as unknown as MouseEvent).clientY });
                             }
                           }}
                           onMouseLeave={() => setHovered(null)}

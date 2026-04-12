@@ -43,8 +43,9 @@ export function fromSortable(s: string): string {
 export function dateAddDays(s: string, n: number): string {
   const d = toDate(s);
   if (!d) return '';
-  d.setDate(d.getDate() + n);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const copy = new Date(d);
+  copy.setDate(copy.getDate() + n);
+  return `${copy.getFullYear()}-${String(copy.getMonth() + 1).padStart(2, '0')}-${String(copy.getDate()).padStart(2, '0')}`;
 }
 
 export function getPeriodRange(d: string, period: Period): string {

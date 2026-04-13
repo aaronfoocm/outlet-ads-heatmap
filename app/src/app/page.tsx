@@ -97,7 +97,7 @@ export default function HeatmapPage() {
   useEffect(() => {
     if (!minDate) return;
     const today = new Date().toISOString().slice(0, 10);
-    setStartDate(minDate); // Option A: default to full range from CSV data
+    setStartDate(dateAddDays(maxDate, -89)); // default: last 90 days
     setEndDate(maxDate > today ? today : maxDate);
   }, [minDate, maxDate]);
 

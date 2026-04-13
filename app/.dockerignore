@@ -1,0 +1,31 @@
+# Dependencies
+node_modules
+
+# Next.js build outputs (we copy standalone output only)
+.next
+
+# Git
+.git
+
+# IDE / OS
+*.md
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment files (should be passed as secrets / env vars)
+.env
+.env.*
+!.env.example
+
+# Misc
+README.md
+CLAUDE.md
+AGENTS.md
+eslint.config.mjs
+postcss.config.mjs
+tsconfig.json
+next-env.d.ts

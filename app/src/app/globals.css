@@ -24,3 +24,11 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Hide SWR devtools badge (round icon with n) */
+#__swr,
+[data-swrev],
+[style*="z-index: 9999999"],
+[style*="9999999"] {
+  display: none !important;
+}

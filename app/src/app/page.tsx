@@ -309,14 +309,16 @@ export default function HeatmapPage() {
       let pspdSum = 0, pspdN = 0;
       let poSum = 0, poN = 0;
       for (const [pKey, cell] of pm) {
-        // For Day period: locCount key is the date itself; for Week/Month: avg across dates in period
-        let lc = 0;
+        // For Day period: denominator = locCount[date]
+        // For Week/Month/Quarter: denominator = sum(locCount[d] for all transaction dates in period)
+        // This correctly handles closed days — outlets not operating on a date contribute 0 to the sum
+        let totalOutletDays = 0;
         if (cell.dateKeys.length > 0) {
-          lc = cell.dateKeys.reduce((s, dk) => s + (locCount[dk] ?? 0), 0) / cell.dateKeys.length;
+          totalOutletDays = cell.dateKeys.reduce((s, dk) => s + (locCount[dk] ?? 0), 0);
         }
-        if (lc > 0) {
-          const pspd = cell.orderQtySum / lc;
-          const pout = cell.netSalesSum / lc;
+        if (totalOutletDays > 0) {
+          const pspd = cell.orderQtySum / totalOutletDays;
+          const pout = cell.netSalesSum / totalOutletDays;
           periodPspd.set(pKey, pspd);
           periodPerOutlet.set(pKey, pout);
           pspdSum += pspd;
@@ -743,7 +745,7 @@ PSPD: Sum OrderQty ÷ Active Outlets (locCount)">
                 const isPerOutlet = adsType === 'perOutlet';
                 const entityMetricMap = isAll ? new Map<string, number>() : isGroupRow ? new Map<string, number>() : (isPerOutlet ? (perOutletCellMap.get(code) ?? new Map()) : (pspdCellMap.get(code) ?? new Map()));
                 const entityOverallMetric = isAll
-                  ? (() => { let s = 0, n = 0; for (const [, c] of allPeriodPSPDMap) { const avgLc = c.dateKeys.length > 0 ? c.dateKeys.reduce((su, dk) => su + (locCount[dk] ?? 0), 0) / c.dateKeys.length : 0; if (avgLc > 0) { const v = isPerOutlet ? c.netSalesSum / avgLc : c.orderQtySum / avgLc; s += v; n++; } } return n > 0 ? s / n : 0; })()
+                  ? (() => { let s = 0, n = 0; for (const [, c] of allPeriodPSPDMap) { const totalOd = c.dateKeys.reduce((su, dk) => su + (locCount[dk] ?? 0), 0); if (totalOd > 0) { const v = isPerOutlet ? c.netSalesSum / totalOd : c.orderQtySum / totalOd; s += v; n++; } } return n > 0 ? s / n : 0; })()
                   : isGroupRow ? 0 : (isPerOutlet ? (perOutletMap.get(code) ?? 0) : (pspdMap.get(code) ?? 0));
 
                 const rowLabel = isAll ? `All ${entityLabel}s` : isGroupRow ? code : view === 'outlet' ? disp(entityNames[code] ?? code, true) : (entityNames[code] ?? code);
@@ -758,13 +760,13 @@ PSPD: Sum OrderQty ÷ Active Outlets (locCount)">
                       // Period ADS: PSPD uses orderQtySum/locCount, Per Outlet uses netSalesSum/locCount
                       const periodAds = (isPSPD || isPerOutlet)
                         ? (isAll
-                            ? (() => { const c = allPeriodPSPDMap.get(d); if (!c || c.dateKeys.length === 0) return null; const avgLc = c.dateKeys.reduce((s, dk) => s + (locCount[dk] ?? 0), 0) / c.dateKeys.length; return avgLc > 0 ? (isPerOutlet ? c.netSalesSum / avgLc : c.orderQtySum / avgLc) : null; })()
+                            ? (() => { const c = allPeriodPSPDMap.get(d); if (!c || c.dateKeys.length === 0) return null; const totalOd = c.dateKeys.reduce((s, dk) => s + (locCount[dk] ?? 0), 0); return totalOd > 0 ? (isPerOutlet ? c.netSalesSum / totalOd : c.orderQtySum / totalOd) : null; })()
                             : (entityMetricMap.get(d) ?? null))
                         : (cell !== null && cell.count > 0 ? cell.sum / cell.count : null);
                       const colAds = compareMode === 'col'
                         ? ((isPSPD || isPerOutlet)
                             ? (isAll
-                                ? (() => { const c = allPeriodPSPDMap.get(d); if (!c || c.dateKeys.length === 0) return 0; const avgLc = c.dateKeys.reduce((s, dk) => s + (locCount[dk] ?? 0), 0) / c.dateKeys.length; return avgLc > 0 ? (isPerOutlet ? c.netSalesSum / avgLc : c.orderQtySum / avgLc) : 0; })()
+                                ? (() => { const c = allPeriodPSPDMap.get(d); if (!c || c.dateKeys.length === 0) return 0; const totalOd = c.dateKeys.reduce((s, dk) => s + (locCount[dk] ?? 0), 0); return totalOd > 0 ? (isPerOutlet ? c.netSalesSum / totalOd : c.orderQtySum / totalOd) : 0; })()
                                 : (entityMetricMap.get(d) ?? 0))
                             : (colAdsMap.get(d) ?? 0))
                         : ((isPSPD || isPerOutlet) ? entityOverallMetric : ads);

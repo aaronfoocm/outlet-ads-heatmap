@@ -598,7 +598,13 @@ export default function HeatmapPage() {
           {/* Metric toggle — SKU only */}
           {view === 'sku' && (
             <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-              <span style={{ fontSize: 10, color: SOFT_GRN, whiteSpace: 'nowrap' }}>Metric:</span>
+              <span style={{ fontSize: 10, color: SOFT_GRN, whiteSpace: 'nowrap' }}
+                title="NetSales ADS: Sum NetSales ÷ Transactions
+OrderQty ADS: Sum OrderQty ÷ Transactions
+PSPD: Sum OrderQty ÷ Active Outlets (locCount)
+Per Outlet: Sum NetSales ÷ Active Outlets (locCount)">
+                Metric: <span style={{ fontSize: 9, color: SOFT_GRN, cursor: 'help' }}>[?]</span>
+              </span>
               <div style={{ display: 'flex', gap: 0, border: `1px solid ${BORDER}`, borderRadius: 6, overflow: 'hidden' }}>
                 <button type="button" onClick={() => { setAdsType('netSales'); setHovered(null); }}
                   style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'netSales' ? DEEP_GRN : WHITE, color: adsType === 'netSales' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'netSales' ? 600 : 400, outline: 'none' }}>NetSales ADS</button>

@@ -336,7 +336,7 @@ export default function HeatmapPage() {
 
   // ── Grouped data (Per Category / Per Channel) ──────────────────
   // Aggregates entity data by group dimension (category for outlets, channel for SKUs)
-  const { groupAdsMap, groupCellMap, groupSumMap } = useMemo(() => {
+  const { groupAdsMap, groupCellMap, groupSumMap, groupAthMap } = useMemo(() => {
     const gTotals = new Map<string, { total: number; count: number }>();
     const gCells = new Map<string, Map<string, { sum: number; count: number }>>();
     const gAllRows = allRows.filter(r => !!r.entityCode);
@@ -361,8 +361,21 @@ export default function HeatmapPage() {
     for (const [g, v] of gTotals) gAds.set(g, v.count > 0 ? v.total / v.count : 0);
     const gSum = new Map<string, number>();
     for (const [g, v] of gTotals) gSum.set(g, v.total);
-    return { groupAdsMap: gAds, groupCellMap: gCells, groupSumMap: gSum };
-  }, [allRows, startDate, endDate, period, selectedEntities, selectedCategories, selectedChannels, adsType]);
+    // Group ATH: max ATH across all entities in the group
+    const gAth = new Map<string, number>();
+    for (const [g] of gTotals) {
+      let best = 0;
+      for (const r of gAllRows) {
+        const grpDim = view === 'sku' ? 'mainChannel' : 'category';
+        const grp = grpDim === 'mainChannel' ? r.mainChannel : r.category;
+        if (grp !== g) continue;
+        const a = athSelfMap.get(r.entityCode) ?? 0;
+        if (a > best) best = a;
+      }
+      gAth.set(g, best);
+    }
+    return { groupAdsMap: gAds, groupCellMap: gCells, groupSumMap: gSum, groupAthMap: gAth };
+  }, [allRows, startDate, endDate, period, selectedEntities, selectedCategories, selectedChannels, adsType, athSelfMap]);
 
   // Unfiltered group sums for sort-ordering all group rows (so channel/category filter
   // doesn't determine which rows appear — only which entities feed into each group).
@@ -768,7 +781,7 @@ PSPD: Sum OrderQty ÷ Active Outlets (locCount)">
                         <td key={d}
                           onMouseEnter={e => {
                             if (periodAds !== null) {
-                              setHovered({ entity: rowKey, entityName: rowLabel, category: isGroupRow ? code : (allRows.find(r => (r.entityName || r.entityCode) === code)?.category ?? ''), periodKey: d, periodAds, colAdsValue: colAds, colAds, selfAds: selfAdsVal, athSelf: isGroupRow ? 0 : (athSelfMap.get(code) ?? 0), colDev: colAds > 0 ? (periodAds - colAds) / colAds : 0, selfDev: selfAdsVal > 0 ? (periodAds - selfAdsVal) / selfAdsVal : 0, x: (e as unknown as MouseEvent).clientX, y: (e as unknown as MouseEvent).clientY });
+                              setHovered({ entity: rowKey, entityName: rowLabel, category: isGroupRow ? code : (allRows.find(r => (r.entityName || r.entityCode) === code)?.category ?? ''), periodKey: d, periodAds, colAdsValue: colAds, colAds, selfAds: selfAdsVal, athSelf: isGroupRow ? (groupAthMap.get(code) ?? 0) : (athSelfMap.get(code) ?? 0), colDev: colAds > 0 ? (periodAds - colAds) / colAds : 0, selfDev: selfAdsVal > 0 ? (periodAds - selfAdsVal) / selfAdsVal : 0, x: (e as unknown as MouseEvent).clientX, y: (e as unknown as MouseEvent).clientY });
                             }
                           }}
                           onMouseLeave={() => setHovered(null)}

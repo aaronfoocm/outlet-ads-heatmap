@@ -110,7 +110,7 @@ function getWeekNumber(d: Date): number {
 // ── CSV parser ───────────────────────────────────────
 
 export function parseSalesCSV(text: string): {
-  allRows: { date: string; entityCode: string; netSales: number; orderQty: number; entityName: string; category: string; mainChannel: string }[];
+  allRows: { date: string; entityCode: string; netSales: number; orderQty: number; entityName: string; category: string; mainChannel: string; storeCount: number }[];
   entityCodes: string[];
   entityNames: Record<string, string>;
   categories: string[];
@@ -129,7 +129,7 @@ export function parseSalesCSV(text: string): {
   const first = records[0];
   const isSku = first && 'OrderQty' in first;
 
-  const rows: { date: string; entityCode: string; netSales: number; orderQty: number; entityName: string; category: string; mainChannel: string }[] = [];
+  const rows: { date: string; entityCode: string; netSales: number; orderQty: number; entityName: string; category: string; mainChannel: string; storeCount: number }[] = [];
 
   for (const row of records) {
     if (!row.Date || !row.SKUCode && !row.LocCode || !row.NetSales) continue;
@@ -141,23 +141,33 @@ export function parseSalesCSV(text: string): {
     let category: string;
     let orderQty = 0;
     let mainChannel = '';
+    let storeCount = 1;
+
+    // Normalize category: trim whitespace, strip trailing quotes, normalize case
+    const rawCat = (row.Category ?? '').trim();
+    const normalizedCat = rawCat.replace(/"+$/, '').trim();
+
+    // Skip malformed rows: header leaked into data, or empty category after normalization
+    if (normalizedCat === '' || normalizedCat === 'Category') continue;
 
     if (isSku) {
+      // Use SKUName as the entity key so variants (C001, FPC001, etc.) are grouped under one name
       entityCode = row.SKUCode;
       entityName = row.SKUName ?? '';
-      category = row.Category ?? '';
-      mainChannel = row.MainChannel ?? '';
+      category = normalizedCat;
+      mainChannel = (row.MainChannel ?? '').trim().replace(/"+$/, '');
       if (row.OrderQty) {
         const oq = parseFloat(row.OrderQty);
         if (!isNaN(oq)) orderQty = oq;
       }
+      storeCount = parseFloat(row.StoreCount ?? '1') || 1;
     } else {
       entityCode = row.LocCode;
       entityName = row.LocName ?? '';
-      category = row.Category ?? '';
+      category = normalizedCat;
     }
 
-    rows.push({ date: row.Date, entityCode, netSales: ns, orderQty, entityName, category, mainChannel });
+    rows.push({ date: row.Date, entityCode, netSales: ns, orderQty, entityName, category, mainChannel, storeCount });
   }
 
   const entityCodes = [...new Set(rows.map(r => r.entityCode))].sort();

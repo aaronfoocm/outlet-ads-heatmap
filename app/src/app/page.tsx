@@ -801,7 +801,7 @@ PSPD: Sum OrderQty ÷ Active Outlets (locCount)">
       )}
 
       <div style={{ fontSize: 10, textAlign: 'center', color: SOFT_GRN, padding: '8px 0', borderTop: `1px solid ${BORDER}`, marginTop: 4 }}>
-        ADS = Sum NetSales ÷ Transaction Days &nbsp;·&nbsp; Koppiku Sdn. Bhd. © 2026 &nbsp;·&nbsp; Private &amp; Confidential &nbsp;·&nbsp; Do Not Distribute
+        Koppiku Sdn. Bhd. © 2026 &nbsp;·&nbsp; Private &amp; Confidential &nbsp;·&nbsp; Do Not Distribute
       </div>
     </div>
   );

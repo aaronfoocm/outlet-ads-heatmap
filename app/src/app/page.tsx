@@ -657,7 +657,7 @@ PSPD: Sum OrderQty ÷ Active Outlets (locCount)">
       {sortedEntities.length === 0 ? (
         <div style={{ textAlign: 'center', padding: 32, color: SOFT_GRN, fontSize: 13 }}>No data for selected filters.</div>
       ) : (
-        <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 310px)' }}>
+        <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 200px)' }}>
           {/* Tooltip */}
           {hovered && (
             <div style={{ position: 'fixed', left: hovered.x + 14 + (hovered.x + 260 > window.innerWidth ? -260 : 0), top: Math.min(hovered.y + 14, window.innerHeight - 220), zIndex: 9999, backgroundColor: WHITE, border: `1.5px solid ${DEEP_GRN}`, borderRadius: 8, padding: '10px 14px', boxShadow: '0 6px 24px rgba(0,0,0,0.18)', minWidth: 220, pointerEvents: 'none' }}>
@@ -800,9 +800,8 @@ PSPD: Sum OrderQty ÷ Active Outlets (locCount)">
         </div>
       )}
 
-      <div style={{ fontSize: 10, textAlign: 'center', color: SOFT_GRN, padding: '8px 0' }}>
-        ADS = total NetSales ÷ days with transactions &nbsp;·&nbsp;
-        {view === 'outlet' ? 'CSV: outlet-ads-heatmap/data/outlet_daily_sales.csv' : 'CSV: outlet-ads-heatmap/data/sku_daily_sales.csv'}
+      <div style={{ fontSize: 10, textAlign: 'center', color: SOFT_GRN, padding: '8px 0', borderTop: `1px solid ${BORDER}`, marginTop: 4 }}>
+        ADS = Sum NetSales ÷ Transaction Days &nbsp;·&nbsp; Koppiku Sdn. Bhd. © 2026 &nbsp;·&nbsp; Private &amp; Confidential &nbsp;·&nbsp; Do Not Distribute
       </div>
     </div>
   );

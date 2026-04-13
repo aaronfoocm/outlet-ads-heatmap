@@ -682,7 +682,7 @@ PSPD: Sum OrderQty ÷ Active Outlets (locCount)">
             <thead>
               <tr>
                 <th style={{ position: 'sticky', left: 0, top: 0, zIndex: 30, backgroundColor: WHITE, padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: DEEP_GRN, borderRight: `2px solid ${BORDER}`, borderBottom: `2px solid ${BORDER}` }}>{entityLabel}</th>
-                <th style={{ position: 'sticky', top: 0, zIndex: 29, backgroundColor: WHITE, padding: '8px 10px', textAlign: 'right', fontSize: 11, fontWeight: 600, color: DEEP_GRN, borderBottom: `2px solid ${BORDER}`, minWidth: 64, borderRight: `1px solid ${BORDER}` }}>ADS</th>
+                <th style={{ position: 'sticky', left: 0, top: 0, zIndex: 30, backgroundColor: WHITE, padding: '8px 10px', textAlign: 'right', fontSize: 11, fontWeight: 600, color: DEEP_GRN, borderBottom: `2px solid ${BORDER}`, minWidth: 64, borderRight: `1px solid ${BORDER}` }}>ADS</th>
                 {gridDates.map(d => (
                   <th key={d} style={{ padding: '5px 3px', textAlign: 'center', fontSize: 10, color: DEEP_GRN, borderBottom: `1px solid ${BORDER}`, minWidth: 44 }}>
                     <span style={{ fontSize: 10, fontWeight: 500 }}>{fmtPeriodHeader(d, period)}</span>

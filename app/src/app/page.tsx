@@ -440,7 +440,7 @@ export default function HeatmapPage() {
             </div>
           </div>
           <button type="button"
-            onClick={() => { if (!isLoading && allRows.length) { const s = ['Entity Name', ...gridDates.map(d => fmtPeriodHeader(d, period)), adsType === 'pspd' ? 'Total PSPD' : adsType === 'perOutlet' ? 'Total Per Outlet' : 'Total ADS'].join(','); const rows = sortedEntities.map(code => { const isAll = code === '__ALL__'; const isGroupRow = groupBy === 'group'; const lbl = isAll ? `All ${entityLabel}s` : isGroupRow ? code : view === 'outlet' ? disp(entityNames[code] ?? code, true) : (entityNames[code] ?? code); const dm = isAll ? (() => { const m = new Map<string,{sum:number;count:number}>(); for (const[,pm] of cellMap) for (const[pk,c] of pm) { const a = m.get(pk)??{sum:0,count:0}; m.set(pk,{sum:a.sum+c.sum,count:a.count+c.count}); } return m; })() : isGroupRow ? (groupCellMap.get(code) ?? new Map()) : (cellMap.get(code) ?? new Map()); const pv = gridDates.map(d => { const c = dm.get(d); return c && c.count > 0 ? (c.sum/c.count).toFixed(2) : ''; }); const ta = isAll ? (() => { let s=0,n=0; for (const[,v] of sumMap){s+=v;} for (const[,pm] of cellMap){for(const[,c]of pm){n+=c.count;}} return n>0?s/n:0; })() : isGroupRow ? (groupAdsMap.get(code)??0) : (adsMap.get(code)??0); return [lbl,...pv,ta.toFixed(2)].join(','); }); const csv = [s,...rows].join('\n'); const b = new Blob([csv],{type:'text/csv'}); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href=u; a.download=`kopiku-heatmap-${view}-${new Date().toISOString().slice(0,10)}.csv`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(u); } }}
+            onClick={() => { if (!isLoading && allRows.length) { const s = ['Entity Name', ...gridDates.map(d => fmtPeriodHeader(d, period)), adsType === 'pspd' ? 'Total PSPD' : adsType === 'perOutlet' ? 'Total NS Per-Outlet' : 'Total ADS'].join(','); const rows = sortedEntities.map(code => { const isAll = code === '__ALL__'; const isGroupRow = groupBy === 'group'; const lbl = isAll ? `All ${entityLabel}s` : isGroupRow ? code : view === 'outlet' ? disp(entityNames[code] ?? code, true) : (entityNames[code] ?? code); const dm = isAll ? (() => { const m = new Map<string,{sum:number;count:number}>(); for (const[,pm] of cellMap) for (const[pk,c] of pm) { const a = m.get(pk)??{sum:0,count:0}; m.set(pk,{sum:a.sum+c.sum,count:a.count+c.count}); } return m; })() : isGroupRow ? (groupCellMap.get(code) ?? new Map()) : (cellMap.get(code) ?? new Map()); const pv = gridDates.map(d => { const c = dm.get(d); return c && c.count > 0 ? (c.sum/c.count).toFixed(2) : ''; }); const ta = isAll ? (() => { let s=0,n=0; for (const[,v] of sumMap){s+=v;} for (const[,pm] of cellMap){for(const[,c]of pm){n+=c.count;}} return n>0?s/n:0; })() : isGroupRow ? (groupAdsMap.get(code)??0) : (adsMap.get(code)??0); return [lbl,...pv,ta.toFixed(2)].join(','); }); const csv = [s,...rows].join('\n'); const b = new Blob([csv],{type:'text/csv'}); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href=u; a.download=`kopiku-heatmap-${view}-${new Date().toISOString().slice(0,10)}.csv`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(u); } }}
             style={{ fontSize: 10, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1.5px solid ${BORDER}`, fontWeight: 500, outline: 'none' }}>
             Export CSV
           </button>
@@ -601,19 +601,19 @@ export default function HeatmapPage() {
               <span style={{ fontSize: 10, color: SOFT_GRN, whiteSpace: 'nowrap' }}
                 title="NetSales ADS: Sum NetSales ÷ Transactions
 OrderQty ADS: Sum OrderQty ÷ Transactions
-PSPD: Sum OrderQty ÷ Active Outlets (locCount)
-Per Outlet: Sum NetSales ÷ Active Outlets (locCount)">
+NS Per-Outlet: Sum NetSales ÷ Active Outlets (locCount)
+PSPD: Sum OrderQty ÷ Active Outlets (locCount)">
                 Metric: <span style={{ fontSize: 9, color: SOFT_GRN, cursor: 'help' }}>[?]</span>
               </span>
               <div style={{ display: 'flex', gap: 0, border: `1px solid ${BORDER}`, borderRadius: 6, overflow: 'hidden' }}>
                 <button type="button" onClick={() => { setAdsType('netSales'); setHovered(null); }}
                   style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'netSales' ? DEEP_GRN : WHITE, color: adsType === 'netSales' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'netSales' ? 600 : 400, outline: 'none' }}>NetSales ADS</button>
+                <button type="button" onClick={() => { setAdsType('perOutlet'); setHovered(null); }}
+                  style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'perOutlet' ? DEEP_GRN : WHITE, color: adsType === 'perOutlet' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'perOutlet' ? 600 : 400, outline: 'none' }}>NS Per-Outlet</button>
                 <button type="button" onClick={() => { setAdsType('orderQty'); setHovered(null); }}
                   style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'orderQty' ? DEEP_GRN : WHITE, color: adsType === 'orderQty' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'orderQty' ? 600 : 400, outline: 'none' }}>OrderQty ADS</button>
                 <button type="button" onClick={() => { setAdsType('pspd'); setHovered(null); }}
                   style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'pspd' ? DEEP_GRN : WHITE, color: adsType === 'pspd' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'pspd' ? 600 : 400, outline: 'none' }}>PSPD</button>
-                <button type="button" onClick={() => { setAdsType('perOutlet'); setHovered(null); }}
-                  style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'perOutlet' ? DEEP_GRN : WHITE, color: adsType === 'perOutlet' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'perOutlet' ? 600 : 400, outline: 'none' }}>Per Outlet</button>
               </div>
             </div>
           )}
@@ -653,7 +653,7 @@ Per Outlet: Sum NetSales ÷ Active Outlets (locCount)">
                 {fmtPeriodSub(hovered.periodKey, period) && <><br /><span style={{ fontSize: 9 }}>{fmtPeriodSub(hovered.periodKey, period)}</span></>}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20 }}><span style={{ color: '#888' }}>{adsType === 'pspd' ? 'Period PSPD' : adsType === 'perOutlet' ? 'Period Per Outlet' : 'Period ADS'}</span><span style={{ color: DEEP_GRN, fontWeight: 600 }}>{hovered.periodAds !== null ? fmtK(hovered.periodAds) : '–'}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20 }}><span style={{ color: '#888' }}>{adsType === 'pspd' ? 'Period PSPD' : adsType === 'perOutlet' ? 'Period NS Per-Outlet' : 'Period ADS'}</span><span style={{ color: DEEP_GRN, fontWeight: 600 }}>{hovered.periodAds !== null ? fmtK(hovered.periodAds) : '–'}</span></div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20 }}><span style={{ color: '#888' }}>Column ADS</span><span style={{ color: DEEP_GRN, fontWeight: 600 }}>{fmtK(hovered.colAds)}</span></div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20 }}><span style={{ color: '#888' }}>Own ADS</span><span style={{ color: DEEP_GRN, fontWeight: 600 }}>{fmtK(hovered.selfAds)}</span></div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20 }}><span style={{ color: '#888' }}>ATH (Self)</span><span style={{ color: '#7B3F9E', fontWeight: 600 }}>{fmtK(hovered.athSelf)}</span></div>

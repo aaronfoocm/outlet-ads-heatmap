@@ -62,7 +62,7 @@ export default function HeatmapPage() {
   const [view, setView] = useState<EntityType>('outlet');
   const [period, setPeriod] = useState<Period>('Week');
   const [compareMode, setCompareMode] = useState<CompareMode>('self');
-  const [adsType, setAdsType] = useState<'netSales' | 'orderQty'>('netSales');
+  const [adsType, setAdsType] = useState<'netSales' | 'orderQty' | 'pspd'>('netSales');
   // 'per' = each entity individually, 'all' = single combined row, 'group' = by category/channel
   const [groupBy, setGroupBy] = useState<'per' | 'all' | 'group'>('per');
   // SKU sub-toggle: 'name' collapses variants (current), 'code' shows each SKU separately
@@ -97,7 +97,7 @@ export default function HeatmapPage() {
   useEffect(() => {
     if (!minDate) return;
     const today = new Date().toISOString().slice(0, 10);
-    setStartDate(dateAddDays(maxDate, -89));
+    setStartDate(minDate); // Option A: default to full range from CSV data
     setEndDate(maxDate > today ? today : maxDate);
   }, [minDate, maxDate]);
 
@@ -206,9 +206,9 @@ export default function HeatmapPage() {
     setSelectedEntities(prev => prev.length >= entityCodes.length ? [] : [...entityCodes]);
   }, [entityCodes]);
 
-  const metricVal = (r: typeof allRows[0]) => adsType === 'orderQty' ? r.orderQty : r.netSales;
+  const metricVal = (r: typeof allRows[0]) => adsType === 'pspd' ? r.orderQty / r.storeCount : adsType === 'orderQty' ? r.orderQty : r.netSales;
 
-  const { adsMap, cellMap, colAdsMap, gridDates, overallAds, athSelfMap, sumMap } = useMemo(() => {
+  const { adsMap, cellMap, colAdsMap, gridDates, overallAds, athSelfMap, sumMap, pspdMap, pspdCellMap } = useMemo(() => {
     const totals = new Map<string, { total: number; count: number }>();
     const pcells = new Map<string, Map<string, { sum: number; count: number }>>();
     const maxAllowedDate = new Date().toISOString().slice(0, 10);
@@ -267,7 +267,50 @@ export default function HeatmapPage() {
     const sum = new Map<string, number>();
     for (const [code, v] of totals) sum.set(code, v.total);
 
-    return { adsMap: ads, cellMap: pcells, colAdsMap: colAds, gridDates: gridDs, overallAds: oaN > 0 ? oaSum / oaN : 0, athSelfMap: athSelf, sumMap: sum };
+    // ── PSPD computation ─────────────────────────────────────────
+    // PSPD = cell.orderQtySum / cell.storeCountSum (per entity per period)
+    // Accumulate orderQty and storeCount separately for PSPD
+    const pspdCells = new Map<string, Map<string, { orderQtySum: number; storeCountSum: number }>>();
+    for (const r of allRows) {
+      const d = toSortable(r.date);
+      if (d < startDate || d > endDate) continue;
+      const maxAllowedDate = new Date().toISOString().slice(0, 10);
+      if (d > maxAllowedDate) continue;
+      if (selectedEntities.length > 0 && !selectedEntities.includes(r.entityCode)) continue;
+      if (selectedCategories.length > 0 && !selectedCategories.includes(r.category)) continue;
+      if (selectedChannels.length > 0 && !selectedChannels.includes(r.mainChannel)) continue;
+      const pKey = getPeriodRange(d, period);
+      const rowKey = r.entityCode;
+      if (!pspdCells.has(rowKey)) pspdCells.set(rowKey, new Map());
+      const prev = pspdCells.get(rowKey)!.get(pKey) ?? { orderQtySum: 0, storeCountSum: 0 };
+      pspdCells.get(rowKey)!.set(pKey, {
+        orderQtySum: prev.orderQtySum + r.orderQty,
+        storeCountSum: prev.storeCountSum + r.storeCount,
+      });
+    }
+
+    // Overall PSPD per entity = total orderQty / total storeCount
+    const pspdMap = new Map<string, number>();
+    for (const [rowKey, pm] of pspdCells) {
+      let totalOQ = 0, totalSC = 0;
+      for (const cell of pm.values()) {
+        totalOQ += cell.orderQtySum;
+        totalSC += cell.storeCountSum;
+      }
+      pspdMap.set(rowKey, totalSC > 0 ? totalOQ / totalSC : 0);
+    }
+
+    // Period PSPD map: pspdCellMap[entityCode][periodKey] = PSPD for that period
+    const pspdCellMap = new Map<string, Map<string, number>>();
+    for (const [rowKey, pm] of pspdCells) {
+      const periodPspd = new Map<string, number>();
+      for (const [pKey, cell] of pm) {
+        periodPspd.set(pKey, cell.storeCountSum > 0 ? cell.orderQtySum / cell.storeCountSum : 0);
+      }
+      pspdCellMap.set(rowKey, periodPspd);
+    }
+
+    return { adsMap: ads, cellMap: pcells, colAdsMap: colAds, gridDates: gridDs, overallAds: oaN > 0 ? oaSum / oaN : 0, athSelfMap: athSelf, sumMap: sum, pspdMap, pspdCellMap };
   }, [allRows, startDate, endDate, period, selectedEntities, selectedCategories, selectedChannels, adsType]);
 
   // ── Grouped data (Per Category / Per Channel) ──────────────────
@@ -384,7 +427,7 @@ export default function HeatmapPage() {
           {/* Tab switcher */}
           <div style={{ display: 'flex', gap: 0, marginLeft: 'auto', border: `1.5px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden' }}>
             {(['outlet', 'sku'] as EntityType[]).map(v => (
-              <button key={v} type="button" onClick={() => { setView(v); setSelectedEntities([]); setSelectedCategories([]); setSelectedChannels([]); setHovered(null); setGroupBy('per'); setCompareMode('self'); }}
+              <button key={v} type="button" onClick={() => { setView(v); setSelectedEntities([]); setSelectedCategories([]); setSelectedChannels([]); setHovered(null); setGroupBy('per'); setCompareMode('self'); setAdsType('netSales'); }}
                 style={{ fontSize: 11, padding: '5px 14px', cursor: 'pointer', backgroundColor: view === v ? DEEP_GRN : WHITE, color: view === v ? WHITE : DEEP_GRN, border: 'none', fontWeight: view === v ? 600 : 400, outline: 'none' }}>
                 {v === 'outlet' ? 'Outlet' : 'SKU'}
               </button>
@@ -540,6 +583,8 @@ export default function HeatmapPage() {
                   style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'netSales' ? DEEP_GRN : WHITE, color: adsType === 'netSales' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'netSales' ? 600 : 400, outline: 'none' }}>NetSales ADS</button>
                 <button type="button" onClick={() => { setAdsType('orderQty'); setHovered(null); }}
                   style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'orderQty' ? DEEP_GRN : WHITE, color: adsType === 'orderQty' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'orderQty' ? 600 : 400, outline: 'none' }}>OrderQty ADS</button>
+                <button type="button" onClick={() => { setAdsType('pspd'); setHovered(null); }}
+                  style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'pspd' ? DEEP_GRN : WHITE, color: adsType === 'pspd' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'pspd' ? 600 : 400, outline: 'none' }}>PSPD</button>
               </div>
             </div>
           )}
@@ -630,6 +675,30 @@ export default function HeatmapPage() {
                 const ads = isAll ? allADS : isGroupRow ? (groupAdsMap.get(code) ?? 0) : (adsMap.get(code) ?? 0);
                 const dateMap = isAll ? allPeriodMap : isGroupRow ? (groupCellMap.get(code) ?? new Map()) : (cellMap.get(code) ?? new Map());
 
+                // PSPD mode: combined PSPD period map for 'all' rows (computed from allRows directly)
+                const allPeriodPSPDMap = isAll
+                  ? (() => {
+                      const m = new Map<string, { orderQtySum: number; storeCountSum: number }>();
+                      const maxAllowedDate = new Date().toISOString().slice(0, 10);
+                      for (const r of allRows) {
+                        const d = toSortable(r.date);
+                        if (d < startDate || d > endDate || d > maxAllowedDate) continue;
+                        if (selectedEntities.length > 0 && !selectedEntities.includes(r.entityCode)) continue;
+                        if (selectedCategories.length > 0 && !selectedCategories.includes(r.category)) continue;
+                        if (selectedChannels.length > 0 && !selectedChannels.includes(r.mainChannel)) continue;
+                        const pKey = getPeriodRange(d, period);
+                        const acc = m.get(pKey) ?? { orderQtySum: 0, storeCountSum: 0 };
+                        m.set(pKey, { orderQtySum: acc.orderQtySum + r.orderQty, storeCountSum: acc.storeCountSum + r.storeCount });
+                      }
+                      return m;
+                    })()
+                  : new Map<string, { orderQtySum: number; storeCountSum: number }>();
+
+                // PSPD mode: use pspdMap/pspdCellMap for individual entities
+                const isPSPD = adsType === 'pspd';
+                const entityPspdMap = isAll ? new Map<string, number>() : isGroupRow ? new Map<string, number>() : (pspdCellMap.get(code) ?? new Map());
+                const entityOverallPspd = isAll ? (() => { let oq = 0, sc = 0; for (const c of allPeriodPSPDMap.values()) { oq += c.orderQtySum; sc += c.storeCountSum; } return sc > 0 ? oq / sc : 0; })() : isGroupRow ? 0 : (pspdMap.get(code) ?? 0);
+
                 const rowLabel = isAll ? `All ${entityLabel}s` : isGroupRow ? code : view === 'outlet' ? disp(entityNames[code] ?? code, true) : (entityNames[code] ?? code);
                 const rowKey = isAll ? '__ALL__' : isGroupRow ? code : code;
 
@@ -639,13 +708,28 @@ export default function HeatmapPage() {
                     <td style={{ padding: '5px 10px', textAlign: 'right', fontSize: 11, borderRight: `1px solid ${BORDER}`, color: DEEP_GRN, fontWeight: 600 }}>{fmtK(ads)}</td>
                     {gridDates.map(d => {
                       const cell = dateMap.get(d) ?? null;
-                      const periodAds = cell !== null && cell.count > 0 ? cell.sum / cell.count : null;
-                      const colAds = compareMode === 'col' ? (colAdsMap.get(d) ?? 0) : ads;
+                      // In PSPD mode, use period PSPD from pspdCellMap; otherwise use ADS formula
+                      const periodAds = isPSPD
+                        ? (isAll
+                            ? (() => { const c = allPeriodPSPDMap.get(d); return c && c.storeCountSum > 0 ? c.orderQtySum / c.storeCountSum : null; })()
+                            : (entityPspdMap.get(d) ?? null))
+                        : (cell !== null && cell.count > 0 ? cell.sum / cell.count : null);
+                      const colAds = compareMode === 'col'
+                        ? (isPSPD
+                            ? (isAll
+                                ? (() => { const c = allPeriodPSPDMap.get(d); return c && c.storeCountSum > 0 ? c.orderQtySum / c.storeCountSum : 0; })()
+                                : (entityPspdMap.get(d) ?? 0))
+                            : (colAdsMap.get(d) ?? 0))
+                        : (isPSPD ? entityOverallPspd : ads);
                       const dev = periodAds !== null && colAds > 0 ? (periodAds - colAds) / colAds : 0;
                       const bg = brightCellBg(dev, 1);
                       const fg = brightCellFg(dev);
-                      const cellLabel = periodAds !== null ? (periodAds >= 1000 ? `${(periodAds / 1000).toFixed(1)}k` : periodAds >= 100 ? periodAds.toFixed(0) : (adsType === 'orderQty' ? periodAds.toFixed(0) : periodAds.toFixed(1))) : null;
-                      const selfAdsVal = ads;
+                      const cellLabel = periodAds !== null
+                        ? (isPSPD
+                            ? periodAds.toFixed(2)
+                            : (periodAds >= 1000 ? `${(periodAds / 1000).toFixed(1)}k` : periodAds >= 100 ? periodAds.toFixed(0) : (adsType === 'orderQty' ? periodAds.toFixed(0) : periodAds.toFixed(1))))
+                        : null;
+                      const selfAdsVal = isPSPD ? entityOverallPspd : ads;
                       return (
                         <td key={d}
                           onMouseEnter={e => {

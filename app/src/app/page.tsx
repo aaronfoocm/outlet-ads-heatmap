@@ -645,7 +645,7 @@ PSPD: Sum OrderQty ÷ Active Outlets (locCount)">
         <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 310px)' }}>
           {/* Tooltip */}
           {hovered && (
-            <div style={{ position: 'fixed', left: hovered.x + 14, top: hovered.y + 14, zIndex: 9999, backgroundColor: WHITE, border: `1.5px solid ${DEEP_GRN}`, borderRadius: 8, padding: '10px 14px', boxShadow: '0 6px 24px rgba(0,0,0,0.18)', minWidth: 220, pointerEvents: 'none' }}>
+            <div style={{ position: 'fixed', left: hovered.x + 14 + (hovered.x + 260 > window.innerWidth ? -260 : 0), top: Math.min(hovered.y + 14, window.innerHeight - 220), zIndex: 9999, backgroundColor: WHITE, border: `1.5px solid ${DEEP_GRN}`, borderRadius: 8, padding: '10px 14px', boxShadow: '0 6px 24px rgba(0,0,0,0.18)', minWidth: 220, pointerEvents: 'none' }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: DEEP_GRN, marginBottom: 2 }}>{disp(hovered.entityName, view === 'outlet')}</div>
               <div style={{ fontSize: 11, color: SOFT_GRN, marginBottom: 8, lineHeight: 1.4 }}>
                 {hovered.category && <span style={{ backgroundColor: '#EDF3E8', borderRadius: 4, padding: '1px 5px', marginRight: 6 }}>{hovered.category}</span>}

@@ -82,6 +82,7 @@ export default function HeatmapPage() {
   const [focusedOptionIdx, setFocusedOptionIdx] = useState(-1);
   const [expandedCell, setExpandedCell] = useState<string | null>(null);
   const [compareModeHint, setCompareModeHint] = useState<string | null>(null);
+  const [metricTooltip, setMetricTooltip] = useState<{x:number;y:number}|null>(null);
 
   const csvUrl = view === 'outlet' ? '/data/outlet_daily_sales.csv?v=6' : '/data/sku_daily_sales.csv?v=1';
   const locCountUrl = '/data/loc_daily_count.csv?v=1';
@@ -613,12 +614,11 @@ export default function HeatmapPage() {
           {/* Metric toggle — SKU only */}
           {view === 'sku' && (
             <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-              <span style={{ fontSize: 10, color: SOFT_GRN, whiteSpace: 'nowrap' }}
-                title="NetSales ADS: Sum NetSales ÷ Transactions
-OrderQty ADS: Sum OrderQty ÷ Transactions
-NS Per-Outlet: Sum NetSales ÷ Active Outlets (locCount)
-PSPD: Sum OrderQty ÷ Active Outlets (locCount)">
-                Metric: <span style={{ fontSize: 9, color: SOFT_GRN, cursor: 'help' }}>[?]</span>
+              <span style={{ fontSize: 10, color: SOFT_GRN, whiteSpace: 'nowrap', cursor: 'help' }}
+                onMouseEnter={(e) => { const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); setMetricTooltip({ x: r.left, y: r.bottom + 4 }); }}
+                onMouseLeave={() => setMetricTooltip(null)}
+              >
+                Metric: <span style={{ fontSize: 9, color: SOFT_GRN }}>[?]</span>
               </span>
               <div style={{ display: 'flex', gap: 0, border: `1px solid ${BORDER}`, borderRadius: 6, overflow: 'hidden' }}>
                 <button type="button" onClick={() => { setAdsType('netSales'); setHovered(null); }}
@@ -679,6 +679,18 @@ PSPD: Sum OrderQty ÷ Active Outlets (locCount)">
               </div>
             </div>
           )}
+
+          {metricTooltip && (
+            <div style={{ position: 'fixed', left: metricTooltip.x, top: metricTooltip.y, zIndex: 9999, backgroundColor: WHITE, border: `1.5px solid ${DEEP_GRN}`, borderRadius: 8, padding: '8px 12px', boxShadow: '0 4px 16px rgba(0,0,0,0.15)', minWidth: 260, pointerEvents: 'none' }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: DEEP_GRN, marginBottom: 6 }}>Metric Definitions</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {['NetSales ADS: Sum NetSales ÷ Transactions', 'OrderQty ADS: Sum OrderQty ÷ Transactions', 'NS Per-Outlet: Sum NetSales ÷ Active Outlets (locCount)', 'PSPD: Sum OrderQty ÷ Active Outlets (locCount)'].map(line => (
+                  <div key={line} style={{ fontSize: 10, color: SOFT_GRN, lineHeight: 1.4 }}>{line}</div>
+                ))}
+              </div>
+            </div>
+          )}
+
 
           <table style={{ borderCollapse: 'collapse', minWidth: gridDates.length * 44 + 160 }}>
             <thead>

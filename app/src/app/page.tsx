@@ -62,7 +62,7 @@ export default function HeatmapPage() {
   const [view, setView] = useState<EntityType>('outlet');
   const [period, setPeriod] = useState<Period>('Week');
   const [compareMode, setCompareMode] = useState<CompareMode>('self');
-  const [adsType, setAdsType] = useState<'netSales' | 'orderQty' | 'pspd'>('netSales');
+  const [adsType, setAdsType] = useState<'netSales' | 'orderQty' | 'pspd' | 'perOutlet'>('netSales');
   // 'per' = each entity individually, 'all' = single combined row, 'group' = by category/channel
   const [groupBy, setGroupBy] = useState<'per' | 'all' | 'group'>('per');
   // SKU sub-toggle: 'name' collapses variants (current), 'code' shows each SKU separately
@@ -84,11 +84,13 @@ export default function HeatmapPage() {
   const [compareModeHint, setCompareModeHint] = useState<string | null>(null);
 
   const csvUrl = view === 'outlet' ? '/data/outlet_daily_sales.csv?v=6' : '/data/sku_daily_sales.csv?v=1';
+  const locCountUrl = '/data/loc_daily_count.csv?v=1';
   const { data: rawCsv, isLoading } = useSWR(csvUrl, fetchCSV, { refreshInterval: 86400000, revalidateOnFocus: true, revalidateOnMount: true });
+  const { data: rawLocCount } = useSWR(locCountUrl, fetchCSV, { refreshInterval: 86400000, revalidateOnFocus: true, revalidateOnMount: true });
 
-  const { allRows, entityCodes, entityNames, categories, channels, minDate, maxDate } = useMemo(() => {
-    if (!rawCsv) return { allRows: [], entityCodes: [], entityNames: {}, categories: [], channels: [], minDate: '', maxDate: '' };
-    return parseSalesCSV(rawCsv);
+  const { allRows, entityCodes, entityNames, categories, channels, minDate, maxDate, locCount } = useMemo(() => {
+    if (!rawCsv) return { allRows: [], entityCodes: [], entityNames: {}, categories: [], channels: [], minDate: '', maxDate: '', locCount: {} as Record<string, number> };
+    return parseSalesCSV(rawCsv, rawLocCount ?? undefined);
   }, [rawCsv]);
 
   const [startDate, setStartDate] = useState('');
@@ -206,9 +208,9 @@ export default function HeatmapPage() {
     setSelectedEntities(prev => prev.length >= entityCodes.length ? [] : [...entityCodes]);
   }, [entityCodes]);
 
-  const metricVal = (r: typeof allRows[0]) => adsType === 'pspd' ? r.orderQty / r.storeCount : adsType === 'orderQty' ? r.orderQty : r.netSales;
+  const metricVal = (r: typeof allRows[0]) => adsType === 'pspd' || adsType === 'perOutlet' ? r.orderQty / r.storeCount : adsType === 'orderQty' ? r.orderQty : r.netSales;
 
-  const { adsMap, cellMap, colAdsMap, gridDates, overallAds, athSelfMap, sumMap, pspdMap, pspdCellMap } = useMemo(() => {
+  const { adsMap, cellMap, colAdsMap, gridDates, overallAds, athSelfMap, sumMap, pspdMap, pspdCellMap, perOutletMap, perOutletCellMap } = useMemo(() => {
     const totals = new Map<string, { total: number; count: number }>();
     const pcells = new Map<string, Map<string, { sum: number; count: number }>>();
     const maxAllowedDate = new Date().toISOString().slice(0, 10);
@@ -267,10 +269,12 @@ export default function HeatmapPage() {
     const sum = new Map<string, number>();
     for (const [code, v] of totals) sum.set(code, v.total);
 
-    // ── PSPD computation ─────────────────────────────────────────
-    // PSPD = cell.orderQtySum / cell.storeCountSum (per entity per period)
-    // Accumulate orderQty and storeCount separately for PSPD
-    const pspdCells = new Map<string, Map<string, { orderQtySum: number; storeCountSum: number }>>();
+    // ── PSPD & Per Outlet computation ─────────────────────────────────────────
+    // PSPD = total orderQty / locCount[date] (global active outlet count per date)
+    // Per Outlet = total netSales / locCount[date]
+    // locCount is keyed by DD-MM-YYYY; sortable dates are YYYY-MM-DD — convert for lookup
+    const toLocCountKey = (d: string) => { const p = d.split('-'); return p.length === 3 ? `${p[2]}-${p[1]}-${p[0]}` : d; };
+    const pspdCells = new Map<string, Map<string, { orderQtySum: number; netSalesSum: number; dateKeys: string[] }>>();
     for (const r of allRows) {
       const d = toSortable(r.date);
       if (d < startDate || d > endDate) continue;
@@ -282,36 +286,53 @@ export default function HeatmapPage() {
       const pKey = getPeriodRange(d, period);
       const rowKey = r.entityCode;
       if (!pspdCells.has(rowKey)) pspdCells.set(rowKey, new Map());
-      const prev = pspdCells.get(rowKey)!.get(pKey) ?? { orderQtySum: 0, storeCountSum: 0 };
+      const prev = pspdCells.get(rowKey)!.get(pKey) ?? { orderQtySum: 0, netSalesSum: 0, dateKeys: [] };
+      const lck = toLocCountKey(d);
       pspdCells.get(rowKey)!.set(pKey, {
         orderQtySum: prev.orderQtySum + r.orderQty,
-        storeCountSum: prev.storeCountSum + r.storeCount,
+        netSalesSum: prev.netSalesSum + r.netSales,
+        dateKeys: prev.dateKeys.includes(lck) ? prev.dateKeys : [...prev.dateKeys, lck],
       });
     }
 
-    // Overall PSPD per entity = total orderQty / total storeCount
+    // Overall PSPD per entity = avg of period PSPD values
+    // Period PSPD = orderQtySum / locCount[date] (global active outlet count)
+    // Per Outlet = netSalesSum / locCount[date]
     const pspdMap = new Map<string, number>();
-    for (const [rowKey, pm] of pspdCells) {
-      let totalOQ = 0, totalSC = 0;
-      for (const cell of pm.values()) {
-        totalOQ += cell.orderQtySum;
-        totalSC += cell.storeCountSum;
-      }
-      pspdMap.set(rowKey, totalSC > 0 ? totalOQ / totalSC : 0);
-    }
-
-    // Period PSPD map: pspdCellMap[entityCode][periodKey] = PSPD for that period
+    const perOutletMap = new Map<string, number>();
     const pspdCellMap = new Map<string, Map<string, number>>();
+    const perOutletCellMap = new Map<string, Map<string, number>>();
+
     for (const [rowKey, pm] of pspdCells) {
       const periodPspd = new Map<string, number>();
+      const periodPerOutlet = new Map<string, number>();
+      let pspdSum = 0, pspdN = 0;
+      let poSum = 0, poN = 0;
       for (const [pKey, cell] of pm) {
-        periodPspd.set(pKey, cell.storeCountSum > 0 ? cell.orderQtySum / cell.storeCountSum : 0);
+        // For Day period: locCount key is the date itself; for Week/Month: avg across dates in period
+        let lc = 0;
+        if (cell.dateKeys.length > 0) {
+          lc = cell.dateKeys.reduce((s, dk) => s + (locCount[dk] ?? 0), 0) / cell.dateKeys.length;
+        }
+        if (lc > 0) {
+          const pspd = cell.orderQtySum / lc;
+          const pout = cell.netSalesSum / lc;
+          periodPspd.set(pKey, pspd);
+          periodPerOutlet.set(pKey, pout);
+          pspdSum += pspd;
+          pspdN++;
+          poSum += pout;
+          poN++;
+        }
       }
       pspdCellMap.set(rowKey, periodPspd);
+      perOutletCellMap.set(rowKey, periodPerOutlet);
+      pspdMap.set(rowKey, pspdN > 0 ? pspdSum / pspdN : 0);
+      perOutletMap.set(rowKey, poN > 0 ? poSum / poN : 0);
     }
 
-    return { adsMap: ads, cellMap: pcells, colAdsMap: colAds, gridDates: gridDs, overallAds: oaN > 0 ? oaSum / oaN : 0, athSelfMap: athSelf, sumMap: sum, pspdMap, pspdCellMap };
-  }, [allRows, startDate, endDate, period, selectedEntities, selectedCategories, selectedChannels, adsType]);
+    return { adsMap: ads, cellMap: pcells, colAdsMap: colAds, gridDates: gridDs, overallAds: oaN > 0 ? oaSum / oaN : 0, athSelfMap: athSelf, sumMap: sum, pspdMap, pspdCellMap, perOutletMap, perOutletCellMap };
+  }, [allRows, startDate, endDate, period, selectedEntities, selectedCategories, selectedChannels, adsType, rawLocCount]);
 
   // ── Grouped data (Per Category / Per Channel) ──────────────────
   // Aggregates entity data by group dimension (category for outlets, channel for SKUs)
@@ -419,7 +440,7 @@ export default function HeatmapPage() {
             </div>
           </div>
           <button type="button"
-            onClick={() => { if (!isLoading && allRows.length) { const s = ['Entity Name', ...gridDates.map(d => fmtPeriodHeader(d, period)), adsType === 'pspd' ? 'Total PSPD' : 'Total ADS'].join(','); const rows = sortedEntities.map(code => { const isAll = code === '__ALL__'; const isGroupRow = groupBy === 'group'; const lbl = isAll ? `All ${entityLabel}s` : isGroupRow ? code : view === 'outlet' ? disp(entityNames[code] ?? code, true) : (entityNames[code] ?? code); const dm = isAll ? (() => { const m = new Map<string,{sum:number;count:number}>(); for (const[,pm] of cellMap) for (const[pk,c] of pm) { const a = m.get(pk)??{sum:0,count:0}; m.set(pk,{sum:a.sum+c.sum,count:a.count+c.count}); } return m; })() : isGroupRow ? (groupCellMap.get(code) ?? new Map()) : (cellMap.get(code) ?? new Map()); const pv = gridDates.map(d => { const c = dm.get(d); return c && c.count > 0 ? (c.sum/c.count).toFixed(2) : ''; }); const ta = isAll ? (() => { let s=0,n=0; for (const[,v] of sumMap){s+=v;} for (const[,pm] of cellMap){for(const[,c]of pm){n+=c.count;}} return n>0?s/n:0; })() : isGroupRow ? (groupAdsMap.get(code)??0) : (adsMap.get(code)??0); return [lbl,...pv,ta.toFixed(2)].join(','); }); const csv = [s,...rows].join('\n'); const b = new Blob([csv],{type:'text/csv'}); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href=u; a.download=`kopiku-heatmap-${view}-${new Date().toISOString().slice(0,10)}.csv`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(u); } }}
+            onClick={() => { if (!isLoading && allRows.length) { const s = ['Entity Name', ...gridDates.map(d => fmtPeriodHeader(d, period)), adsType === 'pspd' ? 'Total PSPD' : adsType === 'perOutlet' ? 'Total Per Outlet' : 'Total ADS'].join(','); const rows = sortedEntities.map(code => { const isAll = code === '__ALL__'; const isGroupRow = groupBy === 'group'; const lbl = isAll ? `All ${entityLabel}s` : isGroupRow ? code : view === 'outlet' ? disp(entityNames[code] ?? code, true) : (entityNames[code] ?? code); const dm = isAll ? (() => { const m = new Map<string,{sum:number;count:number}>(); for (const[,pm] of cellMap) for (const[pk,c] of pm) { const a = m.get(pk)??{sum:0,count:0}; m.set(pk,{sum:a.sum+c.sum,count:a.count+c.count}); } return m; })() : isGroupRow ? (groupCellMap.get(code) ?? new Map()) : (cellMap.get(code) ?? new Map()); const pv = gridDates.map(d => { const c = dm.get(d); return c && c.count > 0 ? (c.sum/c.count).toFixed(2) : ''; }); const ta = isAll ? (() => { let s=0,n=0; for (const[,v] of sumMap){s+=v;} for (const[,pm] of cellMap){for(const[,c]of pm){n+=c.count;}} return n>0?s/n:0; })() : isGroupRow ? (groupAdsMap.get(code)??0) : (adsMap.get(code)??0); return [lbl,...pv,ta.toFixed(2)].join(','); }); const csv = [s,...rows].join('\n'); const b = new Blob([csv],{type:'text/csv'}); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href=u; a.download=`kopiku-heatmap-${view}-${new Date().toISOString().slice(0,10)}.csv`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(u); } }}
             style={{ fontSize: 10, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1.5px solid ${BORDER}`, fontWeight: 500, outline: 'none' }}>
             Export CSV
           </button>
@@ -585,6 +606,8 @@ export default function HeatmapPage() {
                   style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'orderQty' ? DEEP_GRN : WHITE, color: adsType === 'orderQty' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'orderQty' ? 600 : 400, outline: 'none' }}>OrderQty ADS</button>
                 <button type="button" onClick={() => { setAdsType('pspd'); setHovered(null); }}
                   style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'pspd' ? DEEP_GRN : WHITE, color: adsType === 'pspd' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'pspd' ? 600 : 400, outline: 'none' }}>PSPD</button>
+                <button type="button" onClick={() => { setAdsType('perOutlet'); setHovered(null); }}
+                  style={{ fontSize: 10, padding: '3px 10px', cursor: 'pointer', backgroundColor: adsType === 'perOutlet' ? DEEP_GRN : WHITE, color: adsType === 'perOutlet' ? WHITE : DEEP_GRN, border: 'none', fontWeight: adsType === 'perOutlet' ? 600 : 400, outline: 'none' }}>Per Outlet</button>
               </div>
             </div>
           )}
@@ -624,7 +647,7 @@ export default function HeatmapPage() {
                 {fmtPeriodSub(hovered.periodKey, period) && <><br /><span style={{ fontSize: 9 }}>{fmtPeriodSub(hovered.periodKey, period)}</span></>}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20 }}><span style={{ color: '#888' }}>{adsType === 'pspd' ? 'Period PSPD' : 'Period ADS'}</span><span style={{ color: DEEP_GRN, fontWeight: 600 }}>{hovered.periodAds !== null ? fmtK(hovered.periodAds) : '–'}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20 }}><span style={{ color: '#888' }}>{adsType === 'pspd' ? 'Period PSPD' : adsType === 'perOutlet' ? 'Period Per Outlet' : 'Period ADS'}</span><span style={{ color: DEEP_GRN, fontWeight: 600 }}>{hovered.periodAds !== null ? fmtK(hovered.periodAds) : '–'}</span></div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20 }}><span style={{ color: '#888' }}>Column ADS</span><span style={{ color: DEEP_GRN, fontWeight: 600 }}>{fmtK(hovered.colAds)}</span></div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20 }}><span style={{ color: '#888' }}>Own ADS</span><span style={{ color: DEEP_GRN, fontWeight: 600 }}>{fmtK(hovered.selfAds)}</span></div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20 }}><span style={{ color: '#888' }}>ATH (Self)</span><span style={{ color: '#7B3F9E', fontWeight: 600 }}>{fmtK(hovered.athSelf)}</span></div>
@@ -675,10 +698,11 @@ export default function HeatmapPage() {
                 const ads = isAll ? allADS : isGroupRow ? (groupAdsMap.get(code) ?? 0) : (adsMap.get(code) ?? 0);
                 const dateMap = isAll ? allPeriodMap : isGroupRow ? (groupCellMap.get(code) ?? new Map()) : (cellMap.get(code) ?? new Map());
 
-                // PSPD mode: combined PSPD period map for 'all' rows (computed from allRows directly)
+                // PSPD & Per Outlet mode: combined period map for 'all' rows (computed from allRows directly)
+                const toLocCountKey2 = (d: string) => { const p = d.split('-'); return p.length === 3 ? `${p[2]}-${p[1]}-${p[0]}` : d; };
                 const allPeriodPSPDMap = isAll
                   ? (() => {
-                      const m = new Map<string, { orderQtySum: number; storeCountSum: number }>();
+                      const m = new Map<string, { orderQtySum: number; netSalesSum: number; dateKeys: string[] }>();
                       const maxAllowedDate = new Date().toISOString().slice(0, 10);
                       for (const r of allRows) {
                         const d = toSortable(r.date);
@@ -687,17 +711,21 @@ export default function HeatmapPage() {
                         if (selectedCategories.length > 0 && !selectedCategories.includes(r.category)) continue;
                         if (selectedChannels.length > 0 && !selectedChannels.includes(r.mainChannel)) continue;
                         const pKey = getPeriodRange(d, period);
-                        const acc = m.get(pKey) ?? { orderQtySum: 0, storeCountSum: 0 };
-                        m.set(pKey, { orderQtySum: acc.orderQtySum + r.orderQty, storeCountSum: acc.storeCountSum + r.storeCount });
+                        const lck = toLocCountKey2(d);
+                        const acc = m.get(pKey) ?? { orderQtySum: 0, netSalesSum: 0, dateKeys: [] };
+                        m.set(pKey, { orderQtySum: acc.orderQtySum + r.orderQty, netSalesSum: acc.netSalesSum + r.netSales, dateKeys: acc.dateKeys.includes(lck) ? acc.dateKeys : [...acc.dateKeys, lck] });
                       }
                       return m;
                     })()
-                  : new Map<string, { orderQtySum: number; storeCountSum: number }>();
+                  : new Map<string, { orderQtySum: number; netSalesSum: number; dateKeys: string[] }>();
 
-                // PSPD mode: use pspdMap/pspdCellMap for individual entities
+                // PSPD & Per Outlet mode: use pspdCellMap/perOutletCellMap for individual entities
                 const isPSPD = adsType === 'pspd';
-                const entityPspdMap = isAll ? new Map<string, number>() : isGroupRow ? new Map<string, number>() : (pspdCellMap.get(code) ?? new Map());
-                const entityOverallPspd = isAll ? (() => { let oq = 0, sc = 0; for (const c of allPeriodPSPDMap.values()) { oq += c.orderQtySum; sc += c.storeCountSum; } return sc > 0 ? oq / sc : 0; })() : isGroupRow ? 0 : (pspdMap.get(code) ?? 0);
+                const isPerOutlet = adsType === 'perOutlet';
+                const entityMetricMap = isAll ? new Map<string, number>() : isGroupRow ? new Map<string, number>() : (isPerOutlet ? (perOutletCellMap.get(code) ?? new Map()) : (pspdCellMap.get(code) ?? new Map()));
+                const entityOverallMetric = isAll
+                  ? (() => { let s = 0, n = 0; for (const [, c] of allPeriodPSPDMap) { const avgLc = c.dateKeys.length > 0 ? c.dateKeys.reduce((su, dk) => su + (locCount[dk] ?? 0), 0) / c.dateKeys.length : 0; if (avgLc > 0) { const v = isPerOutlet ? c.netSalesSum / avgLc : c.orderQtySum / avgLc; s += v; n++; } } return n > 0 ? s / n : 0; })()
+                  : isGroupRow ? 0 : (isPerOutlet ? (perOutletMap.get(code) ?? 0) : (pspdMap.get(code) ?? 0));
 
                 const rowLabel = isAll ? `All ${entityLabel}s` : isGroupRow ? code : view === 'outlet' ? disp(entityNames[code] ?? code, true) : (entityNames[code] ?? code);
                 const rowKey = isAll ? '__ALL__' : isGroupRow ? code : code;
@@ -708,28 +736,28 @@ export default function HeatmapPage() {
                     <td style={{ padding: '5px 10px', textAlign: 'right', fontSize: 11, borderRight: `1px solid ${BORDER}`, color: DEEP_GRN, fontWeight: 600 }}>{fmtK(ads)}</td>
                     {gridDates.map(d => {
                       const cell = dateMap.get(d) ?? null;
-                      // In PSPD mode, use period PSPD from pspdCellMap; otherwise use ADS formula
-                      const periodAds = isPSPD
+                      // Period ADS: PSPD uses orderQtySum/locCount, Per Outlet uses netSalesSum/locCount
+                      const periodAds = (isPSPD || isPerOutlet)
                         ? (isAll
-                            ? (() => { const c = allPeriodPSPDMap.get(d); return c && c.storeCountSum > 0 ? c.orderQtySum / c.storeCountSum : null; })()
-                            : (entityPspdMap.get(d) ?? null))
+                            ? (() => { const c = allPeriodPSPDMap.get(d); if (!c || c.dateKeys.length === 0) return null; const avgLc = c.dateKeys.reduce((s, dk) => s + (locCount[dk] ?? 0), 0) / c.dateKeys.length; return avgLc > 0 ? (isPerOutlet ? c.netSalesSum / avgLc : c.orderQtySum / avgLc) : null; })()
+                            : (entityMetricMap.get(d) ?? null))
                         : (cell !== null && cell.count > 0 ? cell.sum / cell.count : null);
                       const colAds = compareMode === 'col'
-                        ? (isPSPD
+                        ? ((isPSPD || isPerOutlet)
                             ? (isAll
-                                ? (() => { const c = allPeriodPSPDMap.get(d); return c && c.storeCountSum > 0 ? c.orderQtySum / c.storeCountSum : 0; })()
-                                : (entityPspdMap.get(d) ?? 0))
+                                ? (() => { const c = allPeriodPSPDMap.get(d); if (!c || c.dateKeys.length === 0) return 0; const avgLc = c.dateKeys.reduce((s, dk) => s + (locCount[dk] ?? 0), 0) / c.dateKeys.length; return avgLc > 0 ? (isPerOutlet ? c.netSalesSum / avgLc : c.orderQtySum / avgLc) : 0; })()
+                                : (entityMetricMap.get(d) ?? 0))
                             : (colAdsMap.get(d) ?? 0))
-                        : (isPSPD ? entityOverallPspd : ads);
+                        : ((isPSPD || isPerOutlet) ? entityOverallMetric : ads);
                       const dev = periodAds !== null && colAds > 0 ? (periodAds - colAds) / colAds : 0;
                       const bg = brightCellBg(dev, 1);
                       const fg = brightCellFg(dev);
                       const cellLabel = periodAds !== null
-                        ? (isPSPD
-                            ? periodAds.toFixed(2)
+                        ? ((isPSPD || isPerOutlet)
+                            ? (periodAds >= 100 ? periodAds.toFixed(1) : periodAds.toFixed(2))
                             : (periodAds >= 1000 ? `${(periodAds / 1000).toFixed(1)}k` : periodAds >= 100 ? periodAds.toFixed(0) : (adsType === 'orderQty' ? periodAds.toFixed(0) : periodAds.toFixed(1))))
                         : null;
-                      const selfAdsVal = isPSPD ? entityOverallPspd : ads;
+                      const selfAdsVal = (isPSPD || isPerOutlet) ? entityOverallMetric : ads;
                       return (
                         <td key={d}
                           onMouseEnter={e => {

@@ -109,7 +109,7 @@ function getWeekNumber(d: Date): number {
 
 // ── CSV parser ───────────────────────────────────────
 
-export function parseSalesCSV(text: string): {
+export function parseSalesCSV(text: string, locCountText?: string): {
   allRows: { date: string; entityCode: string; netSales: number; orderQty: number; entityName: string; category: string; mainChannel: string; storeCount: number }[];
   entityCodes: string[];
   entityNames: Record<string, string>;
@@ -117,6 +117,7 @@ export function parseSalesCSV(text: string): {
   channels: string[];
   minDate: string;
   maxDate: string;
+  locCount: Record<string, number>;
 } {
   const records = csvParse(text, {
     columns: true,
@@ -176,7 +177,23 @@ export function parseSalesCSV(text: string): {
   const categories = [...new Set(rows.map(r => r.category))].sort();
   const channels = [...new Set(rows.map(r => r.mainChannel).filter(Boolean))].sort();
   const ds = [...new Set(rows.map(r => toSortable(r.date)))].sort();
-  return { allRows: rows, entityCodes, entityNames: entityNameMap, categories, channels, minDate: ds[0] ?? '', maxDate: ds[ds.length - 1] ?? '' };
+
+  // Parse loc_daily_count.csv if provided (SKU mode)
+  const locCount: Record<string, number> = {};
+  if (locCountText) {
+    try {
+      const locRecords = csvParse(locCountText, { columns: true, skip_empty_lines: true, trim: true }) as Record<string, string>[];
+      for (const row of locRecords) {
+        if (row.Date && row.LocCodeCount) {
+          locCount[row.Date.trim()] = parseFloat(row.LocCodeCount) || 0;
+        }
+      }
+    } catch {
+      // ignore parse errors
+    }
+  }
+
+  return { allRows: rows, entityCodes, entityNames: entityNameMap, categories, channels, minDate: ds[0] ?? '', maxDate: ds[ds.length - 1] ?? '', locCount };
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

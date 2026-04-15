@@ -191,14 +191,12 @@ export default function HeatmapPage() {
   // ── Compare mode auto-switch hint ───────────────────────────
   useEffect(() => {
     if (groupBy === 'all' || groupBy === 'group') {
-      if (compareMode !== 'col') {
-        setCompareMode('col');
-        setCompareModeHint('Compare set to vs Column');
-        const timer = setTimeout(() => setCompareModeHint(null), 3000);
-        return () => clearTimeout(timer);
-      }
+      setCompareMode('col');
+      setCompareModeHint('Compare set to vs Column');
+      const timer = setTimeout(() => setCompareModeHint(null), 3000);
+      return () => clearTimeout(timer);
     }
-  }, [groupBy, compareMode]);
+  }, [groupBy]);
 
   // ── Derived data ──────────────────────────────────────────────
   const toggleEntity = useCallback((code: string) => {

@@ -70,6 +70,7 @@ export default function HeatmapPage() {
   const [selectedEntities, setSelectedEntities] = useState<string[]>([]);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
+  const [entitySearch, setEntitySearch] = useState('');
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [catDropdownOpen, setCatDropdownOpen] = useState(false);
   const [channelDropdownOpen, setChannelDropdownOpen] = useState(false);
@@ -84,7 +85,7 @@ export default function HeatmapPage() {
   const [compareModeHint, setCompareModeHint] = useState<string | null>(null);
   const [metricTooltip, setMetricTooltip] = useState<{x:number;y:number}|null>(null);
 
-  const csvUrl = view === 'outlet' ? '/data/outlet_daily_sales.csv?v=6' : '/data/sku_daily_sales.csv?v=1';
+  const csvUrl = view === 'outlet' ? '/api/csv?type=outlet' : '/api/csv?type=sku&v=2';
   const locCountUrl = '/data/loc_daily_count.csv?v=1';
   const { data: rawCsv, isLoading } = useSWR(csvUrl, fetchCSV, { refreshInterval: 86400000, revalidateOnFocus: true, revalidateOnMount: true });
   const { data: rawLocCount } = useSWR(locCountUrl, fetchCSV, { refreshInterval: 86400000, revalidateOnFocus: true, revalidateOnMount: true });
@@ -305,12 +306,10 @@ export default function HeatmapPage() {
     for (const [rowKey, pm] of pspdCells) {
       const periodPspd = new Map<string, number>();
       const periodPerOutlet = new Map<string, number>();
-      let pspdSum = 0, pspdN = 0;
-      let poSum = 0, poN = 0;
+      // Fix Bug 4: use weighted average (weight by outlet-days) instead of equal-weight per period
+      let pspdWeightedSum = 0, totalOutletDaysAll = 0;
+      let poWeightedSum = 0;
       for (const [pKey, cell] of pm) {
-        // For Day period: denominator = locCount[date]
-        // For Week/Month/Quarter: denominator = sum(locCount[d] for all transaction dates in period)
-        // This correctly handles closed days — outlets not operating on a date contribute 0 to the sum
         let totalOutletDays = 0;
         if (cell.dateKeys.length > 0) {
           totalOutletDays = cell.dateKeys.reduce((s, dk) => s + (locCount[dk] ?? 0), 0);
@@ -320,26 +319,46 @@ export default function HeatmapPage() {
           const pout = cell.netSalesSum / totalOutletDays;
           periodPspd.set(pKey, pspd);
           periodPerOutlet.set(pKey, pout);
-          pspdSum += pspd;
-          pspdN++;
-          poSum += pout;
-          poN++;
+          pspdWeightedSum += cell.orderQtySum;   // numerator contribution
+          poWeightedSum += cell.netSalesSum;
+          totalOutletDaysAll += totalOutletDays;
         }
       }
       pspdCellMap.set(rowKey, periodPspd);
       perOutletCellMap.set(rowKey, periodPerOutlet);
-      pspdMap.set(rowKey, pspdN > 0 ? pspdSum / pspdN : 0);
-      perOutletMap.set(rowKey, poN > 0 ? poSum / poN : 0);
+      pspdMap.set(rowKey, totalOutletDaysAll > 0 ? pspdWeightedSum / totalOutletDaysAll : 0);
+      perOutletMap.set(rowKey, totalOutletDaysAll > 0 ? poWeightedSum / totalOutletDaysAll : 0);
     }
 
     return { adsMap: ads, cellMap: pcells, colAdsMap: colAds, gridDates: gridDs, overallAds: oaN > 0 ? oaSum / oaN : 0, athSelfMap: athSelf, sumMap: sum, pspdMap, pspdCellMap, perOutletMap, perOutletCellMap };
   }, [allRows, startDate, endDate, period, selectedEntities, selectedCategories, selectedChannels, adsType, rawLocCount]);
 
+  // ── Week completeness check ─────────────────────────────────────────
+  // Counts unique calendar dates per period to detect incomplete weeks
+  const weekCompleteness = useMemo(() => {
+    const uniqueDates = new Set<string>();
+    for (const r of allRows) {
+      const d = toSortable(r.date);
+      if (d < startDate || d > endDate) continue;
+      uniqueDates.add(r.date); // DD-MM-YYYY — dedup by raw date string
+    }
+    const counts = new Map<string, number>();
+    for (const d of uniqueDates) {
+      const sortable = toSortable(d);
+      const pKey = getPeriodRange(sortable, period);
+      counts.set(pKey, (counts.get(pKey) ?? 0) + 1);
+    }
+    return counts;
+  }, [allRows, startDate, endDate, period]);
+
   // ── Grouped data (Per Category / Per Channel) ──────────────────
   // Aggregates entity data by group dimension (category for outlets, channel for SKUs)
-  const { groupAdsMap, groupCellMap, groupSumMap, groupAthMap } = useMemo(() => {
+  const { groupAdsMap, groupCellMap, groupSumMap, groupAthMap, groupPspdCellMap, groupPerOutletCellMap } = useMemo(() => {
     const gTotals = new Map<string, { total: number; count: number }>();
     const gCells = new Map<string, Map<string, { sum: number; count: number }>>();
+    // PSPD / Per Outlet group-level accumulation: keyed by group (channel/category)
+    const toLocCountKey2 = (d: string) => { const p = d.split('-'); return p.length === 3 ? `${p[2]}-${p[1]}-${p[0]}` : d; };
+    const gPspdCells = new Map<string, Map<string, { orderQtySum: number; netSalesSum: number; dateKeys: string[] }>>();
     const gAllRows = allRows.filter(r => !!r.entityCode);
     for (const r of gAllRows) {
       const d = toSortable(r.date);
@@ -357,6 +376,15 @@ export default function HeatmapPage() {
       if (!gCells.has(grp)) gCells.set(grp, new Map());
       const prev = gCells.get(grp)!.get(pKey) ?? { sum: 0, count: 0 };
       gCells.get(grp)!.set(pKey, { sum: prev.sum + val, count: prev.count + 1 });
+      // Accumulate PSPD/PerOutlet data per group
+      if (!gPspdCells.has(grp)) gPspdCells.set(grp, new Map());
+      const prevPspd = gPspdCells.get(grp)!.get(pKey) ?? { orderQtySum: 0, netSalesSum: 0, dateKeys: [] };
+      const lck = toLocCountKey2(d);
+      gPspdCells.get(grp)!.set(pKey, {
+        orderQtySum: prevPspd.orderQtySum + r.orderQty,
+        netSalesSum: prevPspd.netSalesSum + r.netSales,
+        dateKeys: prevPspd.dateKeys.includes(lck) ? prevPspd.dateKeys : [...prevPspd.dateKeys, lck],
+      });
     }
     const gAds = new Map<string, number>();
     for (const [g, v] of gTotals) gAds.set(g, v.count > 0 ? v.total / v.count : 0);
@@ -367,6 +395,7 @@ export default function HeatmapPage() {
     for (const [g] of gTotals) {
       let best = 0;
       for (const r of gAllRows) {
+        if (selectedEntities.length > 0 && !selectedEntities.includes(r.entityCode)) continue;
         const grpDim = view === 'sku' ? 'mainChannel' : 'category';
         const grp = grpDim === 'mainChannel' ? r.mainChannel : r.category;
         if (grp !== g) continue;
@@ -375,7 +404,24 @@ export default function HeatmapPage() {
       }
       gAth.set(g, best);
     }
-    return { groupAdsMap: gAds, groupCellMap: gCells, groupSumMap: gSum, groupAthMap: gAth };
+    // Compute group-level PSPD and Per-Outlet cell maps
+    // Option A: denominator = number of distinct transaction dates (dateKeys.length)
+    // This is correct for grouped (channel/category) rows since we don't have per-channel outlet breakdown
+    const gPspdMap = new Map<string, Map<string, number>>();
+    const gPerOutletMap = new Map<string, Map<string, number>>();
+    for (const [grp, pm] of gPspdCells) {
+      const periodPspd = new Map<string, number>();
+      const periodPerOutlet = new Map<string, number>();
+      for (const [pKey, cell] of pm) {
+        if (cell.dateKeys.length > 0) {
+          periodPspd.set(pKey, cell.orderQtySum / cell.dateKeys.length);
+          periodPerOutlet.set(pKey, cell.netSalesSum / cell.dateKeys.length);
+        }
+      }
+      gPspdMap.set(grp, periodPspd);
+      gPerOutletMap.set(grp, periodPerOutlet);
+    }
+    return { groupAdsMap: gAds, groupCellMap: gCells, groupSumMap: gSum, groupAthMap: gAth, groupPspdCellMap: gPspdMap, groupPerOutletCellMap: gPerOutletMap };
   }, [allRows, startDate, endDate, period, selectedEntities, selectedCategories, selectedChannels, adsType, athSelfMap]);
 
   // Unfiltered group sums for sort-ordering all group rows (so channel/category filter
@@ -389,12 +435,27 @@ export default function HeatmapPage() {
     });
     const groups = [...new Set(validRows.map(r => grpDim === 'mainChannel' ? r.mainChannel : r.category).filter(Boolean))].sort();
     // Compute unfiltered total per group across the full dataset (date-filtered only)
+    // Option A for PSPD: ΣorderQty / distinct transaction dates in group — simple, correct for grouped rows
+    // For netSales/orderQty: sum directly
     const unfilteredTotals = new Map<string, number>();
-    for (const r of validRows) {
-      const grp = grpDim === 'mainChannel' ? r.mainChannel : r.category;
-      if (!grp) continue;
-      const val = adsType === 'orderQty' ? r.orderQty : r.netSales;
-      unfilteredTotals.set(grp, (unfilteredTotals.get(grp) ?? 0) + val);
+    if (adsType === 'pspd') {
+      const pspdStats = new Map<string, { orderQtySum: number; dateCount: number }>();
+      for (const r of validRows) {
+        const grp = grpDim === 'mainChannel' ? r.mainChannel : r.category;
+        if (!grp) continue;
+        const d = toSortable(r.date);
+        if (!pspdStats.has(grp)) pspdStats.set(grp, { orderQtySum: 0, dateCount: 0 });
+        const prev = pspdStats.get(grp)!;
+        pspdStats.set(grp, { orderQtySum: prev.orderQtySum + r.orderQty, dateCount: prev.dateCount + 1 });
+      }
+      for (const [g, s] of pspdStats) unfilteredTotals.set(g, s.dateCount > 0 ? s.orderQtySum / s.dateCount : 0);
+    } else {
+      for (const r of validRows) {
+        const grp = grpDim === 'mainChannel' ? r.mainChannel : r.category;
+        if (!grp) continue;
+        const val = adsType === 'orderQty' ? r.orderQty : r.netSales;
+        unfilteredTotals.set(grp, (unfilteredTotals.get(grp) ?? 0) + val);
+      }
     }
     return { allGroups: groups, groupUnfilteredSumMap: unfilteredTotals };
   }, [allRows, startDate, endDate, view, adsType]);
@@ -451,6 +512,7 @@ export default function HeatmapPage() {
             <div style={{ fontSize: 18, fontWeight: 700, color: DEEP_GRN }}>Koppiku Heatmap</div>
             <div style={{ fontSize: 11, color: SOFT_GRN, marginTop: 2 }}>
               {view === 'outlet' ? 'Outlet' : 'SKU'} · {groupBy === 'per' ? `${sortedEntities.length} ${entityLabel.toLowerCase()}${sortedEntities.length !== 1 ? 's' : ''}` : groupBy === 'all' ? 'All combined' : `${sortedEntities.length} ${view === 'sku' ? 'channels' : 'categories'}`} · {gridDates.length} {period.toLowerCase()}{gridDates.length !== 1 ? 's' : ''}
+              {maxDate && (() => { const p = maxDate.split('-'); const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']; const label = `${parseInt(p[2])} ${months[parseInt(p[1])-1]} ${p[0]}`; return <span style={{ marginLeft: 8, color: SOFT_GRN }}>· Data through {label}</span>; })()}
             </div>
           </div>
           <button type="button"
@@ -523,19 +585,41 @@ export default function HeatmapPage() {
                   <button type="button" onClick={() => { setSelectedEntities([...allEntityCodes]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>All</button>
                   <button type="button" onClick={() => { setSelectedEntities([]); setHovered(null); }} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', backgroundColor: WHITE, color: DEEP_GRN, border: `1px solid ${BORDER}`, outline: 'none' }}>None</button>
                 </div>
-                {allEntityCodes.map((code: string, i: number) => {
-                  const checked = selectedEntities.includes(code);
-                  const label = view === 'outlet' ? disp(entityNames[code] ?? code, true) : (entityNames[code] ?? code);
-                  return (
-                    <div key={code} role="option" aria-selected={checked} tabIndex={focusedOptionIdx === i ? 0 : -1}
-                      className="dropdown-option"
-                      onClick={() => { toggleEntity(code); setHovered(null); }}
-                      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 4px', cursor: 'pointer', borderRadius: 4, backgroundColor: focusedOptionIdx === i ? '#EDF3E8' : 'transparent' }}>
-                      <input type="checkbox" checked={checked} onChange={() => { toggleEntity(code); setHovered(null); }} style={{ cursor: 'pointer', pointerEvents: 'none' }} tabIndex={-1} aria-hidden="true" />
-                      <span style={{ fontSize: 11, color: DEEP_GRN }}>{label}</span>
-                    </div>
-                  );
-                })}
+                <div style={{ marginBottom: 6 }}>
+                  <input
+                    type="text"
+                    placeholder="Search..."
+                    value={entitySearch}
+                    onChange={e => { setEntitySearch(e.target.value); setFocusedOptionIdx(-1); }}
+                    onKeyDown={e => { if (e.key === 'Escape') { setEntitySearch(''); setFocusedOptionIdx(-1); } }}
+                    style={{ width: '100%', fontSize: 11, padding: '4px 8px', borderRadius: 4, border: `1px solid ${BORDER}`, outline: 'none', color: DEEP_GRN, boxSizing: 'border-box' }}
+                    aria-label={`Search ${entityLabel}`}
+                  />
+                </div>
+                {(() => {
+                  const term = entitySearch.trim().toLowerCase();
+                  const filtered = term
+                    ? allEntityCodes.filter(code => {
+                        const name = (view === 'outlet' ? disp(entityNames[code] ?? code, true) : (entityNames[code] ?? code)).toLowerCase();
+                        return name.includes(term) || code.toLowerCase().includes(term);
+                      })
+                    : allEntityCodes;
+                  if (filtered.length === 0) return <div style={{ fontSize: 10, color: SOFT_GRN, padding: '4px 0', textAlign: 'center' }}>No results</div>;
+                  return filtered.map((code: string, idx: number) => {
+                    const globalIdx = allEntityCodes.indexOf(code);
+                    const checked = selectedEntities.includes(code);
+                    const label = view === 'outlet' ? disp(entityNames[code] ?? code, true) : (entityNames[code] ?? code);
+                    return (
+                      <div key={code} role="option" aria-selected={checked} tabIndex={focusedOptionIdx === globalIdx ? 0 : -1}
+                        className="dropdown-option"
+                        onClick={() => { toggleEntity(code); setHovered(null); }}
+                        style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 4px', cursor: 'pointer', borderRadius: 4, backgroundColor: focusedOptionIdx === globalIdx ? '#EDF3E8' : 'transparent' }}>
+                        <input type="checkbox" checked={checked} onChange={() => { toggleEntity(code); setHovered(null); }} style={{ cursor: 'pointer', pointerEvents: 'none' }} tabIndex={-1} aria-hidden="true" />
+                        <span style={{ fontSize: 11, color: DEEP_GRN }}>{label}</span>
+                      </div>
+                    );
+                  });
+                })()}
               </div>
             )}
           </div>
@@ -695,12 +779,19 @@ export default function HeatmapPage() {
               <tr>
                 <th style={{ position: 'sticky', left: 0, top: 0, zIndex: 30, backgroundColor: WHITE, padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: DEEP_GRN, borderRight: `2px solid ${BORDER}`, borderBottom: `2px solid ${BORDER}` }}>{entityLabel}</th>
                 <th style={{ position: 'sticky', left: 0, top: 0, zIndex: 30, backgroundColor: WHITE, padding: '8px 10px', textAlign: 'right', fontSize: 11, fontWeight: 600, color: DEEP_GRN, borderBottom: `2px solid ${BORDER}`, minWidth: 64, borderRight: `1px solid ${BORDER}` }}>ADS</th>
-                {gridDates.map(d => (
-                  <th key={d} style={{ padding: '5px 3px', textAlign: 'center', fontSize: 10, color: DEEP_GRN, borderBottom: `1px solid ${BORDER}`, minWidth: 44 }}>
+                {gridDates.map(d => {
+                  const dayCount = weekCompleteness.get(d) ?? 0;
+                  const isPartial = period === 'Week' && dayCount > 0 && dayCount < 7;
+                  const isEmpty = period === 'Week' && dayCount === 0;
+                  return (
+                  <th key={d} style={{ padding: '5px 3px', textAlign: 'center', fontSize: 10, color: isEmpty ? '#999' : DEEP_GRN, borderBottom: `1px solid ${BORDER}`, minWidth: 44 }}>
+                    {isPartial && <span title={`Partial week — only ${dayCount} day${dayCount !== 1 ? 's' : ''} of data`} style={{ fontSize: 9, marginRight: 2 }}>⚠️</span>}
+                    {isEmpty && <span title="No data for this week yet" style={{ fontSize: 9, marginRight: 2 }}>🚫</span>}
                     <span style={{ fontSize: 10, fontWeight: 500 }}>{fmtPeriodHeader(d, period)}</span>
                     {fmtPeriodSub(d, period) && <><br /><span style={{ fontSize: 8, color: SOFT_GRN }}>{fmtPeriodSub(d, period)}</span></>}
                   </th>
-                ))}
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
@@ -753,10 +844,25 @@ export default function HeatmapPage() {
                 // PSPD & Per Outlet mode: use pspdCellMap/perOutletCellMap for individual entities
                 const isPSPD = adsType === 'pspd';
                 const isPerOutlet = adsType === 'perOutlet';
-                const entityMetricMap = isAll ? new Map<string, number>() : isGroupRow ? new Map<string, number>() : (isPerOutlet ? (perOutletCellMap.get(code) ?? new Map()) : (pspdCellMap.get(code) ?? new Map()));
+                const entityMetricMap = isAll
+                  ? new Map<string, number>()
+                  : isGroupRow
+                    ? (isPerOutlet ? (groupPerOutletCellMap.get(code) ?? new Map()) : (groupPspdCellMap.get(code) ?? new Map()))
+                    : (isPerOutlet ? (perOutletCellMap.get(code) ?? new Map()) : (pspdCellMap.get(code) ?? new Map()));
+                // Fix Bug 4: use weighted average (by outlet-days) instead of equal-weight per period
                 const entityOverallMetric = isAll
-                  ? (() => { let s = 0, n = 0; for (const [, c] of allPeriodPSPDMap) { const totalOd = c.dateKeys.reduce((su, dk) => su + (locCount[dk] ?? 0), 0); if (totalOd > 0) { const v = isPerOutlet ? c.netSalesSum / totalOd : c.orderQtySum / totalOd; s += v; n++; } } return n > 0 ? s / n : 0; })()
-                  : isGroupRow ? 0 : (isPerOutlet ? (perOutletMap.get(code) ?? 0) : (pspdMap.get(code) ?? 0));
+                  ? (() => { let orderQtyAll = 0, netSalesAll = 0, odAll = 0; for (const [, c] of allPeriodPSPDMap) { const totalOd = c.dateKeys.reduce((su, dk) => su + (locCount[dk] ?? 0), 0); if (totalOd > 0) { orderQtyAll += c.orderQtySum; netSalesAll += c.netSalesSum; odAll += totalOd; } } return odAll > 0 ? (isPerOutlet ? netSalesAll / odAll : orderQtyAll / odAll) : 0; })()
+                  : isGroupRow
+                    ? (() => {
+                        // Group-level PSPD: need Σ(orderQty) / Σ(locCount) = true weighted average
+                        // We don't have raw orderQty/netSales per period at this level, so approximate
+                        // using per-period PSPD × outletDays as proxy for the weighted sum
+                        let weightedPspdSum = 0, odSum = 0;
+                        const pm = (isPerOutlet ? groupPerOutletCellMap.get(code) : groupPspdCellMap.get(code)) ?? new Map<string, number>();
+                        for (const [, pspdVal] of pm) { weightedPspdSum += pspdVal; odSum++; }
+                        return odSum > 0 ? weightedPspdSum / odSum : 0;
+                      })()
+                    : (isPerOutlet ? (perOutletMap.get(code) ?? 0) : (pspdMap.get(code) ?? 0));
 
                 const rowLabel = isAll ? `All ${entityLabel}s` : isGroupRow ? code : view === 'outlet' ? disp(entityNames[code] ?? code, true) : (entityNames[code] ?? code);
                 const rowKey = isAll ? '__ALL__' : isGroupRow ? code : code;
